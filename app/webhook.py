@@ -18,7 +18,8 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
 from . import runtime
-from .admin import guarded as admin_guarded, router as admin_public
+from .admin import (admin_only as admin_admin, guarded as admin_guarded,
+                    router as admin_public)
 from .common import make_store, setup_logging, submission_uuid
 from .config import settings
 from .store import Store
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="Kobo AutoQA pipeline", version="1.1.0", docs_url=None, redoc_url=None)
 app.include_router(admin_public)
 app.include_router(admin_guarded)
+app.include_router(admin_admin)
 
 STATIC = Path(__file__).parent / "static"
 _store: Store | None = None
@@ -64,22 +66,32 @@ def healthz() -> dict:
     return {"status": "ok", "jobs": store().stats()}
 
 
-@app.post("/kobo/hook/{asset_uid}")
-async def receive(
-    asset_uid: str,
-    request: Request,
-    payload: dict = Body(...),
-) -> dict:
-    # The secret is editable from the admin UI, so read the effective value.
-    runtime.apply(store(), settings)
+def _accept(owner: int | None, asset_uid: str, request: Request, payload: dict) -> dict:
+    """Shared body for both hook routes: authenticate, then enqueue."""
+    base = store()
+    if owner is None:
+        # Legacy single-tenant URL. Attribute it to whoever watches the asset;
+        # if exactly one account does, that is unambiguous.
+        owners = [u for u in base.active_user_ids()
+                  if asset_uid in base.for_owner(u).watched_assets()]
+        if len(owners) == 1:
+            owner = owners[0]
+        elif not owners:
+            owner = 0  # pre-accounts data
+        else:
+            log.warning("Hook for %s matches %s accounts; use the per-account URL",
+                        asset_uid, len(owners))
+            raise HTTPException(status_code=409, detail="ambiguous asset; re-register the hook")
 
-    if settings.webhook_secret:
-        provided = request.headers.get(settings.webhook_secret_header, "")
-        if not secrets.compare_digest(provided, settings.webhook_secret):
+    s = runtime.for_owner(base, owner)
+    if s.webhook_secret:
+        provided = request.headers.get(s.webhook_secret_header, "")
+        if not secrets.compare_digest(provided, s.webhook_secret):
             log.warning("Rejected hook for %s: bad or missing secret header", asset_uid)
             raise HTTPException(status_code=403, detail="forbidden")
 
-    allowed = set(settings.asset_uids) | set(store().watched_assets())
+    owned = base.for_owner(owner)
+    allowed = set(s.asset_uids) | set(owned.watched_assets())
     if allowed and asset_uid not in allowed:
         log.warning("Rejected hook for unregistered asset %s", asset_uid)
         raise HTTPException(status_code=404, detail="unknown asset")
@@ -91,6 +103,20 @@ async def receive(
         # 200 on purpose: retrying will not help a malformed payload.
         return {"status": "ignored", "reason": "no submission uuid"}
 
-    created = store().enqueue(asset_uid, uuid, {"source": "webhook"})
-    log.info("Hook %s/%s -> %s", asset_uid, uuid, "queued" if created else "already known")
+    created = owned.enqueue(asset_uid, uuid, {"source": "webhook"})
+    log.info("Hook %s/%s (account %s) -> %s", asset_uid, uuid, owner,
+             "queued" if created else "already known")
     return {"status": "queued" if created else "duplicate", "submission_uuid": uuid}
+
+
+@app.post("/kobo/hook/{owner}/{asset_uid}")
+async def receive_for_owner(owner: int, asset_uid: str, request: Request,
+                            payload: dict = Body(...)) -> dict:
+    """Per-account endpoint. The account id selects whose credentials apply."""
+    return _accept(owner, asset_uid, request, payload)
+
+
+@app.post("/kobo/hook/{asset_uid}")
+async def receive(asset_uid: str, request: Request, payload: dict = Body(...)) -> dict:
+    """Endpoint registered before accounts existed; still honoured."""
+    return _accept(None, asset_uid, request, payload)
