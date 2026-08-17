@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kobo AutoQA pipeline</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f2f2f0;
+  --surface-1: #fcfcfb;
+  --surface-2: #ffffff;
+  --border:    #dedcd6;
+  --border-strong: #c2c0b8;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #77756e;
+  --accent:      #2a78d6;
+  --accent-ink:  #ffffff;
+  --good:     #0ca30c;
+  --warning:  #fab219;
+  --serious:  #ec835a;
+  --critical: #d03b3b;
+  --good-bg:     #0ca30c1f;
+  --warning-bg:  #fab2192e;
+  --critical-bg: #d03b3b1f;
+  --accent-bg:   #2a78d61f;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #111110;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --border:    #34342f;
+    --border-strong: #4a4a43;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8f8e84;
+    --accent: #3987e5;
+    --good-bg:     #0ca30c26;
+    --warning-bg:  #fab21926;
+    --critical-bg: #d03b3b26;
+    --accent-bg:   #3987e526;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #111110; --surface-1: #1a1a19; --surface-2: #232322;
+  --border: #34342f; --border-strong: #4a4a43;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e84;
+  --accent: #3987e5;
+  --good-bg: #0ca30c26; --warning-bg: #fab21926; --critical-bg: #d03b3b26; --accent-bg: #3987e526;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 16px; }
+h2 { font-size: 15px; }
+h3 { font-size: 13px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+.hidden { display: none !important; }
+
+/* ---------- layout ---------- */
+header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 20px; background: var(--surface-1);
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20;
+  flex-wrap: wrap;
+}
+header .spacer { flex: 1; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px; }
+.tabs { display: flex; gap: 4px; }
+.tab {
+  padding: 6px 13px; border-radius: 999px; cursor: pointer; border: 1px solid transparent;
+  color: var(--text-secondary); background: none; font: inherit; font-weight: 500;
+}
+.tab:hover { background: var(--surface-2); color: var(--text-primary); }
+.tab[aria-selected="true"] { background: var(--accent-bg); color: var(--accent); border-color: transparent; }
+
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; margin-bottom: 16px;
+}
+.card > header { all: unset; display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.muted { color: var(--text-muted); }
+.sec { color: var(--text-secondary); }
+.small { font-size: 12.5px; }
+
+/* ---------- controls ---------- */
+label.field { display: block; margin-bottom: 12px; }
+label.field > span { display: block; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 4px; }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  width: 100%; padding: 8px 10px; border-radius: 8px; font: inherit;
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-primary);
+}
+textarea { font-family: var(--mono); font-size: 12px; min-height: 90px; resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+button {
+  font: inherit; font-weight: 500; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-primary);
+}
+button:hover:not(:disabled) { border-color: var(--text-muted); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+button.danger { color: var(--critical); border-color: var(--critical); background: transparent; }
+button.sm { padding: 4px 9px; font-size: 12.5px; }
+.switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
+.switch input { width: auto; margin: 0; }
+
+/* ---------- stat tiles ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; }
+.tile {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 13px 14px;
+}
+.tile .label { font-size: 12.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+.tile .value { font-size: 27px; font-weight: 600; line-height: 1.15; margin-top: 5px; }
+
+/* ---------- status ---------- */
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px;
+  border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary);
+}
+.st-good     { color: var(--good);     background: var(--good-bg);     border-color: transparent; }
+.st-good     .dot { background: var(--good); }
+.st-warning  { color: #8a6100;         background: var(--warning-bg);  border-color: transparent; }
+.st-warning  .dot { background: var(--warning); }
+.st-critical { color: var(--critical); background: var(--critical-bg); border-color: transparent; }
+.st-critical .dot { background: var(--critical); }
+.st-active   { color: var(--accent);   background: var(--accent-bg);   border-color: transparent; }
+.st-active   .dot { background: var(--accent); }
+.st-idle     .dot { background: var(--text-muted); }
+:root[data-theme="dark"] .st-warning,
+:root:where(:not([data-theme="light"])) .st-warning { color: var(--warning); }
+
+/* ---------- tables ---------- */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--text-secondary); font-size: 12px;
+     text-transform: uppercase; letter-spacing: .05em; padding: 7px 10px;
+     border-bottom: 1px solid var(--border); }
+td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+td.num { font-variant-numeric: tabular-nums; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--surface-2); }
+.scroll { overflow-x: auto; }
+
+/* ---------- steps ---------- */
+.step { display: flex; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.step:last-child { border-bottom: 0; padding-bottom: 0; }
+.step:first-child { padding-top: 0; }
+.step .n {
+  flex: none; width: 25px; height: 25px; border-radius: 50%; background: var(--surface-2);
+  border: 1px solid var(--border-strong); display: grid; place-items: center;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+}
+.step.ok .n { background: var(--good-bg); border-color: transparent; color: var(--good); }
+.step .body { flex: 1; min-width: 0; }
+.step .body > h2 { margin-bottom: 3px; }
+
+/* ---------- qual builder ---------- */
+.qq { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; background: var(--surface-2); }
+.qq .head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.qq .head select { width: auto; min-width: 160px; }
+.qq .head input { flex: 1; min-width: 160px; }
+.choices { margin-left: 14px; padding-left: 12px; border-left: 2px solid var(--border); }
+.choices .row { margin-bottom: 6px; }
+.choices input { flex: 1; }
+
+/* ---------- misc ---------- */
+pre {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; overflow: auto; max-height: 320px; font-family: var(--mono); font-size: 11.5px;
+  margin: 0; color: var(--text-secondary);
+}
+#toasts { position: fixed; right: 16px; bottom: 16px; z-index: 100; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+.toast {
+  padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-2); box-shadow: 0 6px 20px #0003; font-size: 13px;
+  display: flex; gap: 8px; align-items: flex-start;
+}
+.toast.err { border-color: var(--critical); }
+.toast.ok  { border-color: var(--good); }
+#login { max-width: 340px; margin: 14vh auto; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px;
+        background: var(--surface-2); border: 1px solid var(--border); font-size: 12px; }
+details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; }
+.wrap-anywhere { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+
+<!-- ============================ LOGIN ============================ -->
+<div id="login" class="hidden">
+  <div class="card">
+    <h1 style="margin-bottom:4px">Kobo AutoQA pipeline</h1>
+    <p class="muted small" style="margin-top:0">Sign in to configure and monitor the pipeline.</p>
+    <form id="loginForm">
+      <label class="field"><span>Admin password</span>
+        <input type="password" id="pw" autocomplete="current-password" required></label>
+      <button class="primary" type="submit" style="width:100%">Sign in</button>
+    </form>
+    <p id="loginErr" class="small hidden" style="color:var(--critical);margin-bottom:0"></p>
+  </div>
+</div>
+
+<!-- ============================= APP ============================= -->
+<div id="app" class="hidden">
+<header>
+  <strong>AutoQA pipeline</strong>
+  <span id="connBadge" class="badge st-idle"><span class="dot"></span>checking…</span>
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="forms"   aria-selected="true">Forms</button>
+    <button class="tab" role="tab" data-tab="setup"   aria-selected="false">Setup</button>
+    <button class="tab" role="tab" data-tab="monitor" aria-selected="false">Monitor</button>
+  </nav>
+  <span class="spacer"></span>
+  <span id="dryBadge" class="badge hidden"><span class="dot"></span>Dry run</span>
+  <button class="sm" id="themeBtn" title="Switch between auto, light and dark">Theme: auto</button>
+  <button class="sm" id="logoutBtn">Sign out</button>
+</header>
+
+<main>
+  <!-- ---------------- FORMS ---------------- -->
+  <section id="tab-forms">
+    <div class="card">
+      <header><h2>Your forms</h2><span class="spacer" style="flex:1"></span>
+        <input type="text" id="assetSearch" placeholder="Filter by name…" style="max-width:260px">
+        <button class="sm" id="reloadAssets">Reload</button>
+      </header>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Form</th><th>UID</th><th class="num">Submissions</th><th>Pipeline</th><th></th></tr></thead>
+          <tbody id="assetRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------- SETUP ---------------- -->
+  <section id="tab-setup" class="hidden">
+    <div id="noAsset" class="card muted">Pick a form on the <strong>Forms</strong> tab first.</div>
+
+    <div id="setupBody" class="hidden">
+      <div class="card">
+        <header>
+          <h1 id="setupName">—</h1>
+          <span id="setupUid" class="chip mono"></span>
+          <span class="spacer" style="flex:1"></span>
+          <label class="switch small"><input type="checkbox" id="cfgEnabled"> Pipeline enabled</label>
+        </header>
+
+        <!-- step 1 -->
+        <div class="step" id="step1">
+          <div class="n">1</div>
+          <div class="body">
+            <h2>Server capability check</h2>
+            <p class="muted small" style="margin:2px 0 10px">
+              What the <code>advanced_submission_post</code> endpoint on this server accepts.
+              The dialect decides the payload shape the worker sends.</p>
+            <div class="row">
+              <span class="small sec">Detected dialect</span>
+              <span id="dialectBadge" class="badge st-idle"><span class="dot"></span>—</span>
+              <select id="cfgDialect" style="width:auto">
+                <option value="auto">auto-detect</option>
+                <option value="legacy">legacy (googlets / googletx)</option>
+                <option value="20250820">20250820 (Action enum)</option>
+              </select>
+            </div>
+            <details style="margin-top:10px">
+              <summary>Raw advanced_submission_schema</summary>
+              <pre id="schemaDump" style="margin-top:8px"></pre>
+            </details>
+          </div>
+        </div>
+
+        <!-- step 2 -->
+        <div class="step" id="step2">
+          <div class="n">2</div>
+          <div class="body">
+            <h2>Audio questions to process</h2>
+            <p class="muted small" style="margin:2px 0 10px">
+              Detected from the form definition. Untick any recording you do not want analysed.</p>
+            <div id="xpathList" class="row"></div>
+          </div>
+        </div>
+
+        <!-- step 3 -->
+        <div class="step" id="step3">
+          <div class="n">3</div>
+          <div class="body">
+            <h2>Languages</h2>
+            <div class="grid2" style="margin-top:8px">
+              <label class="field"><span>Audio language (BCP-47, must have ASR support)</span>
+                <input type="text" id="cfgTranscript" placeholder="fr-FR"></label>
+              <label class="field"><span>Translate into (comma separated, blank = skip)</span>
+                <input type="text" id="cfgTranslations" placeholder="en, es"></label>
+              <label class="field"><span>Language AutoQA reads (blank = original transcript)</span>
+                <input type="text" id="cfgQualSource" placeholder="en"></label>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfgEnableQual"> Run qualitative analysis</label>
+          </div>
+        </div>
+
+        <!-- step 4 -->
+        <div class="step" id="step4">
+          <div class="n">4</div>
+          <div class="body">
+            <h2>Preset analysis questions</h2>
+            <p class="muted small" style="margin:2px 0 10px">
+              These are answered automatically by AutoQA for every submission and land in
+              <code>_supplementalDetails</code>. UUIDs are generated once and then kept stable.</p>
+            <div id="qualList"></div>
+            <div class="row" style="margin-top:6px">
+              <select id="newQualType" style="width:auto">
+                <option value="qualText">Free text</option>
+                <option value="qualSelectOne">Select one</option>
+                <option value="qualSelectMultiple">Select multiple</option>
+                <option value="qualTags">Tags</option>
+                <option value="qualInteger">Integer</option>
+                <option value="qualNote">Note (not analysed)</option>
+              </select>
+              <button class="sm" id="addQual">+ Add question</button>
+              <span class="spacer" style="flex:1"></span>
+              <button class="sm" id="loadTemplate">Load humanitarian template</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- step 5 -->
+        <div class="step" id="step5">
+          <div class="n">5</div>
+          <div class="body">
+            <h2>Apply to KoboToolbox</h2>
+            <p class="muted small" style="margin:2px 0 10px">
+              Writes questions, languages and enabled recordings into the form's
+              <code>advanced_features</code>. Preview first if you are touching a live form.</p>
+            <div class="row">
+              <button class="primary" id="applyBtn">Save &amp; apply</button>
+              <button id="previewBtn">Preview payload</button>
+              <span id="applyState" class="small muted"></span>
+            </div>
+            <pre id="previewDump" class="hidden" style="margin-top:10px"></pre>
+          </div>
+        </div>
+
+        <!-- step 6 -->
+        <div class="step" id="step6">
+          <div class="n">6</div>
+          <div class="body">
+            <h2>Trigger</h2>
+            <p class="muted small" style="margin:2px 0 10px">
+              The interval poller always runs. A REST Service webhook makes it near-instant.</p>
+            <div id="hookArea"></div>
+            <div class="row" style="margin-top:10px">
+              <button id="hookBtn">Register webhook</button>
+              <span id="hookHint" class="small muted"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- step 7 -->
+        <div class="step" id="step7">
+          <div class="n">7</div>
+          <div class="body">
+            <h2>Process existing submissions</h2>
+            <div class="row" style="margin-top:6px">
+              <span class="small sec">Last</span>
+              <input type="number" id="bfDays" value="7" min="1" style="width:80px">
+              <span class="small sec">days, max</span>
+              <input type="number" id="bfLimit" value="0" min="0" style="width:80px">
+              <span class="small sec">records (0 = no cap)</span>
+              <button id="backfillBtn">Queue backfill</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------- MONITOR ---------------- -->
+  <section id="tab-monitor" class="hidden">
+    <div class="card">
+      <header><h2>Queue</h2><span class="spacer" style="flex:1"></span>
+        <label class="switch small"><input type="checkbox" id="autoRefresh" checked> Auto-refresh</label>
+        <button class="sm" id="refreshJobs">Refresh</button>
+        <button class="sm" id="retryFailed">Retry all failed</button>
+      </header>
+      <div class="tiles" id="tiles"></div>
+    </div>
+
+    <div class="card">
+      <header><h2>Recent submissions</h2><span class="spacer" style="flex:1"></span>
+        <select id="stageFilter" style="width:auto">
+          <option value="">All stages</option>
+          <option value="new">Queued</option>
+          <option value="transcribe">Transcribing</option>
+          <option value="translate">Translating</option>
+          <option value="qual">Analysing</option>
+          <option value="done">Done</option>
+          <option value="failed">Failed</option>
+        </select>
+      </header>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Submission</th><th>Form</th><th>Stage</th><th class="num">Tries</th><th>Updated</th><th>Detail</th><th></th></tr></thead>
+          <tbody id="jobRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card hidden" id="supCard">
+      <header><h2>Submission detail</h2><span class="spacer" style="flex:1"></span>
+        <button class="sm" id="closeSup">Close</button></header>
+      <pre id="supDump"></pre>
+    </div>
+  </section>
+</main>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $  = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+const API = "/admin/api";
+
+let ENV = {}, ASSETS = [], CUR = null, QUAL = [], TIMER = null;
+
+/* ------------------------------ helpers ------------------------------ */
+function toast(msg, kind="") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  $("#toasts").append(el);
+  setTimeout(() => el.remove(), kind === "err" ? 9000 : 4000);
+}
+async function api(path, opts={}) {
+  const res = await fetch(API + path, {
+    headers: { "Content-Type": "application/json" }, credentials: "same-origin", ...opts,
+  });
+  if (res.status === 401) { showLogin(); throw new Error("Session expired"); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  return body;
+}
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const ago = ts => {
+  if (!ts) return "—";
+  const d = Math.max(0, Date.now()/1000 - ts);
+  if (d < 60) return Math.floor(d) + "s ago";
+  if (d < 3600) return Math.floor(d/60) + "m ago";
+  if (d < 86400) return Math.floor(d/3600) + "h ago";
+  return Math.floor(d/86400) + "d ago";
+};
+
+/* Stage -> {label, class}. Colour never carries meaning alone: every badge
+   also shows its text label. */
+const STAGE = {
+  new:        { label: "Queued",      cls: "st-idle" },
+  transcribe: { label: "Transcribing",cls: "st-active" },
+  translate:  { label: "Translating", cls: "st-active" },
+  qual:       { label: "Analysing",   cls: "st-active" },
+  done:       { label: "Done",        cls: "st-good" },
+  failed:     { label: "Failed",      cls: "st-critical" },
+};
+const stageBadge = s => {
+  const m = STAGE[s] || { label: s, cls: "st-idle" };
+  return `<span class="badge ${m.cls}"><span class="dot"></span>${esc(m.label)}</span>`;
+};
+
+/* ------------------------------- auth -------------------------------- */
+function showLogin() { $("#login").classList.remove("hidden"); $("#app").classList.add("hidden"); }
+function showApp()   { $("#login").classList.add("hidden");   $("#app").classList.remove("hidden"); }
+
+$("#loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    await api("/login", { method: "POST", body: JSON.stringify({ password: $("#pw").value }) });
+    $("#loginErr").classList.add("hidden");
+    $("#pw").value = "";
+    await boot();
+  } catch (err) {
+    $("#loginErr").textContent = err.message;
+    $("#loginErr").classList.remove("hidden");
+  }
+});
+$("#logoutBtn").addEventListener("click", async () => {
+  await api("/logout", { method: "POST" }).catch(() => {});
+  showLogin();
+});
+
+/* ------------------------------- theme ------------------------------- */
+$("#themeBtn").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const next = cur === "dark" ? "light" : cur === "light" ? "auto" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("autoqa_theme", next); } catch {}
+  $("#themeBtn").textContent = "Theme: " + next;
+});
+try {
+  const saved = localStorage.getItem("autoqa_theme");
+  if (saved) {
+    document.documentElement.setAttribute("data-theme", saved);
+    $("#themeBtn").textContent = "Theme: " + saved;
+  }
+} catch {}
+
+/* -------------------------------- tabs ------------------------------- */
+$$(".tab").forEach(t => t.addEventListener("click", () => selectTab(t.dataset.tab)));
+function selectTab(name) {
+  $$(".tab").forEach(t => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
+  ["forms","setup","monitor"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+  if (name === "monitor") loadJobs();
+}
+
+/* ------------------------------- forms ------------------------------- */
+async function loadAssets() {
+  $("#assetRows").innerHTML = `<tr><td colspan="5" class="muted">Loading…</td></tr>`;
+  try {
+    ASSETS = (await api("/assets")).results;
+    renderAssets();
+  } catch (e) {
+    $("#assetRows").innerHTML = `<tr><td colspan="5" style="color:var(--critical)">${esc(e.message)}</td></tr>`;
+  }
+}
+function renderAssets() {
+  const q = $("#assetSearch").value.toLowerCase();
+  const rows = ASSETS.filter(a => !q || (a.name||"").toLowerCase().includes(q) || a.uid.toLowerCase().includes(q));
+  if (!rows.length) { $("#assetRows").innerHTML = `<tr><td colspan="5" class="muted">No forms match.</td></tr>`; return; }
+  $("#assetRows").innerHTML = rows.map(a => {
+    const badge = !a.managed
+      ? `<span class="badge st-idle"><span class="dot"></span>Not set up</span>`
+      : a.enabled
+        ? `<span class="badge st-good"><span class="dot"></span>Active</span>`
+        : `<span class="badge st-warning"><span class="dot"></span>Paused</span>`;
+    return `<tr class="clickable" data-uid="${esc(a.uid)}">
+      <td>${esc(a.name || "(untitled)")}${a.deployed ? "" : ` <span class="muted small">· not deployed</span>`}</td>
+      <td class="mono muted">${esc(a.uid)}</td>
+      <td class="num">${a.submissions.toLocaleString()}</td>
+      <td>${badge}</td>
+      <td><button class="sm">Configure</button></td></tr>`;
+  }).join("");
+  $$("#assetRows tr.clickable").forEach(tr =>
+    tr.addEventListener("click", () => openAsset(tr.dataset.uid)));
+}
+$("#assetSearch").addEventListener("input", renderAssets);
+$("#reloadAssets").addEventListener("click", loadAssets);
+
+/* ------------------------------- setup ------------------------------- */
+async function openAsset(uid) {
+  selectTab("setup");
+  $("#noAsset").classList.remove("hidden");
+  $("#setupBody").classList.add("hidden");
+  $("#noAsset").textContent = "Loading form…";
+  try {
+    CUR = await api("/assets/" + encodeURIComponent(uid));
+  } catch (e) {
+    $("#noAsset").innerHTML = `<span style="color:var(--critical)">${esc(e.message)}</span>`;
+    return;
+  }
+  $("#noAsset").classList.add("hidden");
+  $("#setupBody").classList.remove("hidden");
+  renderSetup();
+}
+
+function renderSetup() {
+  const c = CUR, cfg = c.config;
+  $("#setupName").textContent = c.name || "(untitled)";
+  $("#setupUid").textContent  = c.uid;
+
+  // step 1 — dialect
+  const known = c.detected_dialect && !(c.schema && c.schema._error);
+  $("#dialectBadge").className = "badge " + (known ? "st-good" : "st-warning");
+  $("#dialectBadge").innerHTML = `<span class="dot"></span>${esc(c.detected_dialect || "unknown")}`;
+  $("#step1").classList.toggle("ok", !!known);
+  $("#cfgDialect").value = cfg.schema_dialect || "auto";
+  $("#schemaDump").textContent = JSON.stringify(c.schema, null, 2);
+
+  // step 2 — questions
+  const chosen = cfg.xpaths && cfg.xpaths.length ? cfg.xpaths
+               : (c.configured_xpaths.length ? c.configured_xpaths : c.media_questions);
+  $("#xpathList").innerHTML = c.media_questions.length
+    ? c.media_questions.map(x => `<label class="switch chip">
+        <input type="checkbox" class="xp" value="${esc(x)}" ${chosen.includes(x) ? "checked" : ""}>
+        <span class="mono">${esc(x)}</span></label>`).join("")
+    : `<span class="badge st-warning"><span class="dot"></span>No audio questions found on this form</span>`;
+  $("#step2").classList.toggle("ok", c.media_questions.length > 0);
+
+  // step 3 — languages
+  $("#cfgEnabled").checked      = cfg.enabled;
+  $("#cfgTranscript").value     = cfg.transcript_language || "";
+  $("#cfgTranslations").value   = (cfg.translation_languages || []).join(", ");
+  $("#cfgQualSource").value     = cfg.qual_source_language || "";
+  $("#cfgEnableQual").checked   = cfg.enable_qual;
+  $("#step3").classList.toggle("ok", !!cfg.transcript_language);
+
+  // step 4 — qual questions
+  QUAL = JSON.parse(JSON.stringify(c.qual_survey || []));
+  renderQual();
+
+  // step 5
+  $("#step5").classList.toggle("ok", (c.qual_survey || []).length > 0);
+  $("#applyState").textContent = c.managed ? "" : "Not applied yet.";
+  $("#previewDump").classList.add("hidden");
+
+  // step 6 — hook
+  renderHooks();
+
+  $("#step7").classList.toggle("ok", false);
+}
+
+function renderQual() {
+  $("#qualList").innerHTML = QUAL.map((q, i) => {
+    const isSel = q.type === "qualSelectOne" || q.type === "qualSelectMultiple";
+    const label = (q.labels && q.labels._default) || q.label || "";
+    return `<div class="qq" data-i="${i}">
+      <div class="head">
+        <select class="qtype">
+          ${["qualText","qualSelectOne","qualSelectMultiple","qualTags","qualInteger","qualNote"]
+            .map(t => `<option value="${t}" ${q.type===t?"selected":""}>${
+              {qualText:"Free text",qualSelectOne:"Select one",qualSelectMultiple:"Select multiple",
+               qualTags:"Tags",qualInteger:"Integer",qualNote:"Note"}[t]}</option>`).join("")}
+        </select>
+        <input type="text" class="qlabel" value="${esc(label)}" placeholder="Question put to the model…">
+        <button class="sm danger qdel" title="Remove">✕</button>
+      </div>
+      ${isSel ? `<div class="choices">
+        ${(q.choices||[]).map((ch,j) => `<div class="row" data-j="${j}">
+            <input type="text" class="clabel" value="${esc((ch.labels&&ch.labels._default)||ch.label||"")}" placeholder="Choice label">
+            <button class="sm danger cdel">✕</button></div>`).join("")}
+        <button class="sm caddb">+ Choice</button></div>` : ""}
+      ${q.uuid ? `<div class="small muted mono" style="margin-top:6px">uuid ${esc(q.uuid)}</div>` : ""}
+    </div>`;
+  }).join("") || `<p class="muted small">No analysis questions yet — add one below.</p>`;
+
+  $$("#qualList .qq").forEach(el => {
+    const i = +el.dataset.i;
+    $(".qtype", el).addEventListener("change", e => {
+      QUAL[i].type = e.target.value;
+      if ((e.target.value === "qualSelectOne" || e.target.value === "qualSelectMultiple") && !QUAL[i].choices)
+        QUAL[i].choices = [];
+      renderQual();
+    });
+    $(".qlabel", el).addEventListener("input", e => {
+      QUAL[i].labels = QUAL[i].labels || {}; QUAL[i].labels._default = e.target.value;
+    });
+    $(".qdel", el).addEventListener("click", () => { QUAL.splice(i,1); renderQual(); });
+    $$(".clabel", el).forEach((inp, j) => inp.addEventListener("input", e => {
+      QUAL[i].choices[j].labels = QUAL[i].choices[j].labels || {};
+      QUAL[i].choices[j].labels._default = e.target.value;
+    }));
+    $$(".cdel", el).forEach((b, j) => b.addEventListener("click", () => {
+      QUAL[i].choices.splice(j,1); renderQual();
+    }));
+    const add = $(".caddb", el);
+    if (add) add.addEventListener("click", () => {
+      QUAL[i].choices = QUAL[i].choices || [];
+      QUAL[i].choices.push({ uuid: "", labels: { _default: "" } });
+      renderQual();
+    });
+  });
+}
+$("#addQual").addEventListener("click", () => {
+  const t = $("#newQualType").value;
+  QUAL.push({ type: t, labels: { _default: "" },
+              choices: (t==="qualSelectOne"||t==="qualSelectMultiple") ? [] : [] });
+  renderQual();
+});
+$("#loadTemplate").addEventListener("click", () => {
+  QUAL = [
+    { type:"qualText", labels:{_default:"Summarise the respondent's main concern in two sentences."}, choices:[] },
+    { type:"qualSelectOne", labels:{_default:"Overall sentiment of the response"},
+      choices:[{uuid:"",labels:{_default:"Positive"}},{uuid:"",labels:{_default:"Neutral"}},{uuid:"",labels:{_default:"Negative"}}] },
+    { type:"qualSelectMultiple", labels:{_default:"Which needs are mentioned?"},
+      choices:["Food","Shelter","Health","WASH","Protection","Education","Livelihoods"]
+        .map(l => ({uuid:"",labels:{_default:l}})) },
+    { type:"qualTags", labels:{_default:"Key themes raised (free tags)"}, choices:[] },
+    { type:"qualInteger", labels:{_default:"Urgency on a 1-5 scale, where 5 is life-threatening."}, choices:[] },
+  ];
+  renderQual();
+  toast("Template loaded — edit the questions, then Save & apply.");
+});
+
+function pickedXpaths() { return $$(".xp").filter(c => c.checked).map(c => c.value); }
+function langList(v) { return v.split(",").map(s => s.trim()).filter(Boolean); }
+
+function currentConfig() {
+  return {
+    enabled: $("#cfgEnabled").checked,
+    transcript_language: $("#cfgTranscript").value.trim(),
+    translation_languages: langList($("#cfgTranslations").value),
+    qual_source_language: $("#cfgQualSource").value.trim(),
+    enable_qual: $("#cfgEnableQual").checked,
+    schema_dialect: $("#cfgDialect").value,
+    xpaths: pickedXpaths(),
+  };
+}
+
+async function applySetup(dryRun) {
+  const cfg = currentConfig();
+  const payload = {
+    qual_survey: QUAL, xpaths: cfg.xpaths,
+    translation_languages: cfg.translation_languages, dry_run: dryRun,
+  };
+  const btn = dryRun ? $("#previewBtn") : $("#applyBtn");
+  btn.disabled = true;
+  try {
+    const res = await api(`/assets/${encodeURIComponent(CUR.uid)}/qual`,
+      { method: "PUT", body: JSON.stringify(payload) });
+    if (dryRun) {
+      $("#previewDump").textContent = JSON.stringify(res.advanced_features, null, 2);
+      $("#previewDump").classList.remove("hidden");
+      return;
+    }
+    await api(`/assets/${encodeURIComponent(CUR.uid)}/config`,
+      { method: "PUT", body: JSON.stringify(cfg) });
+    QUAL = res.qual_survey || QUAL;
+    $("#applyState").textContent = "Applied just now.";
+    $("#step5").classList.add("ok");
+    toast("Configuration applied to KoboToolbox.", "ok");
+    renderQual();
+    loadAssets();
+  } catch (e) { toast(e.message, "err"); }
+  finally { btn.disabled = false; }
+}
+$("#applyBtn").addEventListener("click", () => applySetup(false));
+$("#previewBtn").addEventListener("click", () => applySetup(true));
+
+function renderHooks() {
+  const ours = (CUR.hooks || []).filter(h => h.is_ours);
+  const box = $("#hookArea");
+  if (!ENV.public_webhook_url) {
+    box.innerHTML = `<span class="badge st-warning"><span class="dot"></span>PUBLIC_WEBHOOK_URL not set</span>
+      <p class="small muted" style="margin:8px 0 0">Polling every ${ENV.poll_interval_seconds}s will still pick up submissions.
+      Set <code>PUBLIC_WEBHOOK_URL</code> in <code>.env</code> to enable instant triggering.</p>`;
+    $("#hookBtn").disabled = true;
+    $("#step6").classList.toggle("ok", false);
+    return;
+  }
+  $("#hookBtn").disabled = false;
+  if (!ours.length) {
+    box.innerHTML = `<span class="badge st-idle"><span class="dot"></span>No webhook yet</span>
+      <p class="small muted wrap-anywhere" style="margin:8px 0 0">Will register <code>${esc(CUR.expected_endpoint)}</code></p>`;
+    $("#step6").classList.remove("ok");
+  } else {
+    box.innerHTML = ours.map(h => `<div class="row">
+      <span class="badge ${h.active ? "st-good" : "st-warning"}"><span class="dot"></span>${h.active ? "Active" : "Inactive"}</span>
+      <span class="mono small wrap-anywhere">${esc(h.endpoint)}</span>
+      <span class="small muted">${h.success_count||0} ok / ${h.failed_count||0} failed</span>
+      <button class="sm danger" data-hook="${esc(h.uid)}">Remove</button></div>`).join("");
+    $$("#hookArea [data-hook]").forEach(b => b.addEventListener("click", async () => {
+      try {
+        await api(`/assets/${encodeURIComponent(CUR.uid)}/hook/${encodeURIComponent(b.dataset.hook)}`,
+          { method: "DELETE" });
+        toast("Webhook removed.", "ok"); openAsset(CUR.uid);
+      } catch (e) { toast(e.message, "err"); }
+    }));
+    $("#step6").classList.add("ok");
+  }
+  $("#hookHint").textContent = ENV.webhook_secret_set
+    ? `Secured with the ${ENV.webhook_secret_header} header.`
+    : "WEBHOOK_SECRET is not set — the endpoint will accept unauthenticated POSTs.";
+}
+$("#hookBtn").addEventListener("click", async () => {
+  try {
+    const r = await api(`/assets/${encodeURIComponent(CUR.uid)}/hook`,
+      { method: "POST", body: JSON.stringify({}) });
+    toast(r.existing ? "Webhook already registered." : "Webhook registered.", "ok");
+    openAsset(CUR.uid);
+  } catch (e) { toast(e.message, "err"); }
+});
+
+$("#backfillBtn").addEventListener("click", async () => {
+  const btn = $("#backfillBtn"); btn.disabled = true;
+  try {
+    const r = await api(`/assets/${encodeURIComponent(CUR.uid)}/backfill`, {
+      method: "POST",
+      body: JSON.stringify({ days: +$("#bfDays").value, limit: +$("#bfLimit").value }),
+    });
+    toast(`Queued ${r.enqueued} submission(s) since ${r.since}.`, "ok");
+    $("#step7").classList.add("ok");
+  } catch (e) { toast(e.message, "err"); }
+  finally { btn.disabled = false; }
+});
+
+/* ------------------------------ monitor ------------------------------ */
+const TILES = [
+  { key: "new",        label: "Queued",       cls: "st-idle" },
+  { key: "transcribe", label: "Transcribing", cls: "st-active" },
+  { key: "translate",  label: "Translating",  cls: "st-active" },
+  { key: "qual",       label: "Analysing",    cls: "st-active" },
+  { key: "done",       label: "Done",         cls: "st-good" },
+  { key: "failed",     label: "Failed",       cls: "st-critical" },
+];
+async function loadJobs() {
+  let data;
+  try { data = await api("/jobs?limit=150&stage=" + encodeURIComponent($("#stageFilter").value)); }
+  catch (e) { $("#jobRows").innerHTML = `<tr><td colspan="7" style="color:var(--critical)">${esc(e.message)}</td></tr>`; return; }
+
+  $("#tiles").innerHTML = TILES.map(t => `<div class="tile">
+      <div class="label"><span class="badge ${t.cls}" style="padding:0;background:none;border:0"><span class="dot"></span></span>${t.label}</div>
+      <div class="value">${(data.stats[t.key] || 0).toLocaleString()}</div>
+    </div>`).join("");
+
+  const rows = data.results;
+  $("#jobRows").innerHTML = rows.length ? rows.map(j => `<tr data-a="${esc(j.asset_uid)}" data-s="${esc(j.submission_uuid)}">
+      <td class="mono small wrap-anywhere">${esc(j.submission_uuid)}</td>
+      <td class="mono small muted">${esc(j.asset_uid)}</td>
+      <td>${stageBadge(j.stage)}</td>
+      <td class="num">${j.attempts}</td>
+      <td class="small muted">${ago(j.updated_at)}</td>
+      <td class="small" style="color:${j.last_error ? "var(--critical)" : "inherit"};max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${esc(j.last_error || "")}">${esc(j.last_error || "—")}</td>
+      <td class="row" style="gap:5px;border-bottom:0">
+        <button class="sm jview">View</button><button class="sm jretry">Retry</button></td>
+    </tr>`).join("") : `<tr><td colspan="7" class="muted">Nothing queued yet.</td></tr>`;
+
+  $$("#jobRows tr[data-s]").forEach(tr => {
+    const a = tr.dataset.a, s = tr.dataset.s;
+    const v = $(".jview", tr), r = $(".jretry", tr);
+    if (v) v.addEventListener("click", async () => {
+      try {
+        const res = await api(`/assets/${encodeURIComponent(a)}/submissions/${encodeURIComponent(s)}`);
+        $("#supDump").textContent = JSON.stringify(res.supplement, null, 2);
+        $("#supCard").classList.remove("hidden");
+        $("#supCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (e) { toast(e.message, "err"); }
+    });
+    if (r) r.addEventListener("click", async () => {
+      try { await api(`/jobs/${encodeURIComponent(a)}/${encodeURIComponent(s)}/retry`, { method: "POST" });
+            toast("Requeued."); loadJobs(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+  });
+}
+$("#refreshJobs").addEventListener("click", loadJobs);
+$("#stageFilter").addEventListener("change", loadJobs);
+$("#closeSup").addEventListener("click", () => $("#supCard").classList.add("hidden"));
+$("#retryFailed").addEventListener("click", async () => {
+  try { const r = await api("/jobs/retry-failed", { method: "POST" });
+        toast(`Requeued ${r.requeued} failed job(s).`, "ok"); loadJobs(); }
+  catch (e) { toast(e.message, "err"); }
+});
+$("#autoRefresh").addEventListener("change", setupTimer);
+function setupTimer() {
+  clearInterval(TIMER);
+  if ($("#autoRefresh").checked) TIMER = setInterval(() => {
+    if (!$("#tab-monitor").classList.contains("hidden")) loadJobs();
+  }, 8000);
+}
+
+/* -------------------------------- boot -------------------------------- */
+async function boot() {
+  try { ENV = await api("/env"); }
+  catch { showLogin(); return; }
+  showApp();
+  $("#dryBadge").classList.toggle("hidden", !ENV.dry_run);
+  if (ENV.dry_run) $("#dryBadge").className = "badge st-warning";
+
+  api("/ping").then(p => {
+    $("#connBadge").className = "badge st-good";
+    $("#connBadge").innerHTML = `<span class="dot"></span>${esc(p.username || "connected")} @ ${esc(new URL(p.server).host)}`;
+  }).catch(e => {
+    $("#connBadge").className = "badge st-critical";
+    $("#connBadge").innerHTML = `<span class="dot"></span>Kobo unreachable`;
+    toast("Cannot reach KoboToolbox: " + e.message, "err");
+  });
+
+  await loadAssets();
+  setupTimer();
+}
+boot();
+</script>
+</body>
+</html>

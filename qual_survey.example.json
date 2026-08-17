@@ -1,0 +1,47 @@
+{
+  "_comment": "Preset AutoQA questions. Applied with: python -m app.cli apply-qual <asset_uid> qual_survey.example.json. UUIDs are generated on first apply and must stay stable afterwards - commit the file back once applied.",
+  "qual_survey": [
+    {
+      "type": "qualText",
+      "labels": { "_default": "Summarise the respondent's main concern in two sentences." },
+      "choices": []
+    },
+    {
+      "type": "qualSelectOne",
+      "labels": { "_default": "Overall sentiment of the response" },
+      "choices": [
+        { "uuid": "", "labels": { "_default": "Positive" } },
+        { "uuid": "", "labels": { "_default": "Neutral" } },
+        { "uuid": "", "labels": { "_default": "Negative" } }
+      ]
+    },
+    {
+      "type": "qualSelectMultiple",
+      "labels": { "_default": "Which needs are mentioned?" },
+      "choices": [
+        { "uuid": "", "labels": { "_default": "Food" } },
+        { "uuid": "", "labels": { "_default": "Shelter" } },
+        { "uuid": "", "labels": { "_default": "Health" } },
+        { "uuid": "", "labels": { "_default": "WASH" } },
+        { "uuid": "", "labels": { "_default": "Protection" } },
+        { "uuid": "", "labels": { "_default": "Education" } },
+        { "uuid": "", "labels": { "_default": "Livelihoods" } }
+      ]
+    },
+    {
+      "type": "qualTags",
+      "labels": { "_default": "Key themes raised (free tags)" },
+      "choices": []
+    },
+    {
+      "type": "qualInteger",
+      "labels": { "_default": "Urgency on a 1-5 scale, where 5 is life-threatening." },
+      "choices": []
+    },
+    {
+      "type": "qualText",
+      "labels": { "_default": "Quote the single most representative sentence, verbatim." },
+      "choices": []
+    }
+  ]
+}

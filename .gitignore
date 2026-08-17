@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+*.env
+!.env.example
+
+# Runtime state
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

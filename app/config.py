@@ -1,0 +1,80 @@
+"""Configuration loaded from environment variables."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+
+def _csv(value: str | None) -> list[str]:
+    return [v.strip() for v in (value or "").split(",") if v.strip()]
+
+
+def _bool(value: str | None, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+@dataclass
+class Settings:
+    # --- Kobo connection ---------------------------------------------------
+    kobo_url: str = field(default_factory=lambda: os.getenv("KOBO_URL", "https://kf.kobotoolbox.org").rstrip("/"))
+    kobo_token: str = field(default_factory=lambda: os.getenv("KOBO_TOKEN", ""))
+    verify_tls: bool = field(default_factory=lambda: _bool(os.getenv("KOBO_VERIFY_TLS"), True))
+    http_timeout: float = field(default_factory=lambda: float(os.getenv("HTTP_TIMEOUT", "60")))
+
+    # --- Scope -------------------------------------------------------------
+    # Comma-separated asset UIDs to watch. Empty = watch every asset that a
+    # webhook delivers (polling still requires an explicit list).
+    asset_uids: list[str] = field(default_factory=lambda: _csv(os.getenv("ASSET_UIDS")))
+
+    # --- NLP behaviour -----------------------------------------------------
+    # Source language for automatic transcription, e.g. "fr" or "fr-FR".
+    transcript_language: str = field(default_factory=lambda: os.getenv("TRANSCRIPT_LANGUAGE", "en"))
+    # Target languages for automatic translation.
+    translation_languages: list[str] = field(default_factory=lambda: _csv(os.getenv("TRANSLATION_LANGUAGES")))
+    # Run the preset qualitative-analysis questions (AutoQA) after translation.
+    enable_qual: bool = field(default_factory=lambda: _bool(os.getenv("ENABLE_QUAL"), True))
+    # Which translation language AutoQA should read from. Empty = the transcript.
+    qual_source_language: str = field(default_factory=lambda: os.getenv("QUAL_SOURCE_LANGUAGE", ""))
+
+    # --- Payload dialect ---------------------------------------------------
+    # "legacy"  -> googlets/googletx keys (kpi 2.024.x - 2.026.x)
+    # "20250820"-> newer subsequences schema
+    # "auto"    -> probe /advanced_submission_schema/ once and decide
+    schema_dialect: str = field(default_factory=lambda: os.getenv("SCHEMA_DIALECT", "auto"))
+    # Key used to request automatic Bedrock qual analysis. Confirm against your
+    # server with `python -m app.cli introspect <asset_uid>`.
+    qual_trigger_key: str = field(default_factory=lambda: os.getenv("QUAL_TRIGGER_KEY", "qual"))
+
+    # --- Scheduling --------------------------------------------------------
+    poll_interval_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_INTERVAL_SECONDS", "300")))
+    poll_lookback_minutes: int = field(default_factory=lambda: int(os.getenv("POLL_LOOKBACK_MINUTES", "1440")))
+    worker_tick_seconds: int = field(default_factory=lambda: int(os.getenv("WORKER_TICK_SECONDS", "15")))
+    # How long to wait between checks while Kobo processes an async job.
+    async_poll_seconds: int = field(default_factory=lambda: int(os.getenv("ASYNC_POLL_SECONDS", "20")))
+    max_attempts: int = field(default_factory=lambda: int(os.getenv("MAX_ATTEMPTS", "40")))
+
+    # --- Webhook -----------------------------------------------------------
+    webhook_secret: str = field(default_factory=lambda: os.getenv("WEBHOOK_SECRET", ""))
+    webhook_secret_header: str = field(default_factory=lambda: os.getenv("WEBHOOK_SECRET_HEADER", "X-Pipeline-Secret"))
+    public_webhook_url: str = field(default_factory=lambda: os.getenv("PUBLIC_WEBHOOK_URL", ""))
+
+    # --- Admin UI ----------------------------------------------------------
+    admin_password: str = field(default_factory=lambda: os.getenv("ADMIN_PASSWORD", ""))
+    admin_session_hours: int = field(default_factory=lambda: int(os.getenv("ADMIN_SESSION_HOURS", "12")))
+    admin_cookie_secure: bool = field(default_factory=lambda: _bool(os.getenv("ADMIN_COOKIE_SECURE"), True))
+
+    # --- Storage / logging -------------------------------------------------
+    db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", "/data/pipeline.db"))
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    dry_run: bool = field(default_factory=lambda: _bool(os.getenv("DRY_RUN"), False))
+
+    def validate(self) -> None:
+        if not self.kobo_token:
+            raise RuntimeError("KOBO_TOKEN is required")
+        if not self.kobo_url.startswith("http"):
+            raise RuntimeError("KOBO_URL must be a full http(s) URL")
+
+
+settings = Settings()

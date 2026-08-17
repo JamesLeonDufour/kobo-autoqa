@@ -1,0 +1,43 @@
+services:
+  api:
+    build: .
+    image: kobo-autoqa-pipeline:1.0.0
+    container_name: kobo-autoqa-api
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - autoqa_data:/data
+    ports:
+      # Bind to loopback only; Nginx Proxy Manager terminates TLS in front.
+      - "127.0.0.1:8077:8000"
+    command: >
+      uvicorn app.webhook:app
+      --host 0.0.0.0 --port 8000
+      --proxy-headers --forwarded-allow-ips=*
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [autoqa]
+
+  worker:
+    build: .
+    image: kobo-autoqa-pipeline:1.0.0
+    container_name: kobo-autoqa-worker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - autoqa_data:/data
+    command: ["python", "-m", "app.worker"]
+    depends_on: [api]
+    networks: [autoqa]
+
+volumes:
+  autoqa_data:
+
+networks:
+  autoqa:
+    driver: bridge
