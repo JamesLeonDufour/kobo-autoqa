@@ -204,6 +204,10 @@ Two caveats worth knowing:
 
 - Tokens are stored **plaintext** in `/data/pipeline.db`, exactly as they would
   be in `.env`. Treat the Docker volume as secret material and do not commit it.
+- The example values shipped in `.env.example` — `your_api_token_here`,
+  `https://kf.example-partner.org`, `change-me-too` — are rejected at startup
+  rather than used. Leaving one in place used to surface as a DNS error or a
+  401 on every request; now it says which field is still unset.
 - Changing the webhook secret invalidates every already-registered Kobo REST
   Service. Re-register them from the Setup tab, or Kobo keeps sending the old
   header and collects 403s.
@@ -377,6 +381,7 @@ is the ground truth for whether the NLP actually ran.
 | Badge reads **Kobo unreachable** | Wrong server URL or a rejected token. Use **Test connection** on the Connection tab — it reports the difference between "cannot reach the host" and "token rejected". |
 | Forms tab is empty | The token belongs to a user with no surveys, or lacks `view_submissions` on them. |
 | Jobs sit in **Queued** forever | The worker is not running or has no credentials. Check `docker compose logs -f worker`. |
+| Worker logs `Poll failed` against a server you never configured | It resolved the wrong account's connection. `docker compose logs worker \| grep 'connected to'` prints the server each account is using; a deployment that predates accounts is account 0. |
 | Jobs cycle in **Transcribing** and never finish | Kobo accepted the request but its NLP is not completing — AutoQA may not be enabled server-side, or the audio language is not ASR-supported. Check the supplement with "View". |
 | Everything lands in **Failed** with a 400 | Almost always the payload dialect. Run `introspect` against the server and pin `SCHEMA_DIALECT`; see [Known version sensitivity](#known-version-sensitivity). |
 | Webhook shows failures in Kobo | Secret mismatch (403) or the form is not enabled here (404). Re-register the hook from the Setup tab after any secret change. |

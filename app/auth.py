@@ -13,14 +13,17 @@ password hash so changing a password ends that user's other sessions.
 """
 from __future__ import annotations
 
+import logging
 import secrets
 
 from fastapi import Depends, HTTPException, Request
 
 from . import users as U
 from .common import make_store
-from .config import settings
+from .config import PLACEHOLDERS, settings
 from .store import Store
+
+log = logging.getLogger(__name__)
 
 COOKIE_NAME = "autoqa_session"
 OWNER_SENTINEL = 0   # the .env break-glass login shares the pre-accounts bucket
@@ -32,6 +35,13 @@ def store() -> Store:
 
 def check_env_password(candidate: str) -> bool:
     if not settings.admin_password:
+        return False
+    if settings.admin_password in PLACEHOLDERS:
+        # The password shipped in .env.example guards nothing: anyone who has
+        # seen the repo knows it. Refusing it is better than a deployment that
+        # believes it is protected.
+        log.error("ADMIN_PASSWORD is still the example value; refusing to accept it. "
+                  "Set a real one in .env and restart.")
         return False
     return secrets.compare_digest(candidate.encode(), settings.admin_password.encode())
 

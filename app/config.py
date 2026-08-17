@@ -9,6 +9,17 @@ def _csv(value: str | None) -> list[str]:
     return [v.strip() for v in (value or "").split(",") if v.strip()]
 
 
+# Values shipped in .env.example. People copy that file and fill in only the
+# fields they recognise, so these reach the runtime looking like real settings
+# and fail later as DNS errors or 401s. Treat them as "not configured".
+PLACEHOLDERS = frozenset({
+    "your_api_token_here",
+    "https://kf.example-partner.org",
+    "change-me-to-a-long-random-string",
+    "change-me-too",
+})
+
+
 def _bool(value: str | None, default: bool = False) -> bool:
     if value is None or value == "":
         return default
@@ -71,13 +82,18 @@ class Settings:
     dry_run: bool = field(default_factory=lambda: _bool(os.getenv("DRY_RUN"), False))
 
     def validate(self) -> None:
-        if not self.kobo_token:
+        if not self.kobo_token or self.kobo_token in PLACEHOLDERS:
             raise RuntimeError(
                 "No Kobo API token. Set KOBO_TOKEN in .env, or enter one on the "
                 "Connection tab of the admin UI."
             )
         if not self.kobo_url.startswith("http"):
             raise RuntimeError("Kobo server URL must be a full http(s) URL")
+        if self.kobo_url in PLACEHOLDERS:
+            raise RuntimeError(
+                f"KOBO_URL is still the example value ({self.kobo_url}). Set your "
+                "own server on the Connection tab, or in .env."
+            )
 
 
 settings = Settings()

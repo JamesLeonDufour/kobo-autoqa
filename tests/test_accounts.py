@@ -149,6 +149,34 @@ async def main():
                     not any(j["submission_uuid"] == "routed-to-first"
                             for j in other.list_jobs(limit=50)))
 
+    print("\n[pre-accounts deployment keeps working]")
+    # A deployment configured before accounts existed keeps its credentials in
+    # one unscoped row until the first admin claims it. Owner 0 has to keep
+    # reading that row: when it did not, the live worker silently fell back to
+    # the .env placeholders and stopped polling.
+    from app import runtime  # noqa: PLC0415
+    legacy = make_store(settings)
+    legacy.set_app_settings("connection", {"kobo_url": "https://legacy.example.org",
+                                           "kobo_token": "legacy-token"})
+    s0 = runtime.for_owner(legacy, 0)
+    fails += not ok("owner 0 reads the pre-accounts connection",
+                    s0.kobo_url == "https://legacy.example.org"
+                    and s0.kobo_token == "legacy-token", s0.kobo_url)
+    s1 = runtime.for_owner(legacy, first["id"])
+    fails += not ok("a real account does not inherit it",
+                    s1.kobo_token != "legacy-token", s1.kobo_token[:12])
+    legacy.delete_app_settings("connection")
+
+    print("\n[placeholder credentials are not credentials]")
+    from app.config import Settings  # noqa: PLC0415
+    probe = Settings()
+    probe.kobo_url, probe.kobo_token = "https://kf.example-partner.org", "your_api_token_here"
+    try:
+        probe.validate()
+        fails += not ok("shipped .env.example values rejected", False, "validate() passed")
+    except RuntimeError:
+        fails += not ok("shipped .env.example values rejected", True)
+
     print("\n[password change ends sessions]")
     async with client() as a:
         await a.post("/admin/api/login", json={"username": "firstuser",

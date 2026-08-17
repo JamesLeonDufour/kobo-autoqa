@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 
 KEY = "connection"
 
+# Rows written before accounts existed. The first admin claims them on sign-up;
+# until then they are still live, and still the deployment's real credentials.
+OWNER_UNCLAIMED = 0
+
 # Editable from the UI. Maps field name -> coercion applied to incoming JSON.
 FIELDS: dict[str, type] = {
     "kobo_url": str,
@@ -84,6 +88,12 @@ def for_owner(store: Store, owner: int, base: Settings = settings) -> Settings:
     """
     resolved = replace(base)
     saved = stored(store, owner)
+    if not saved and owner == OWNER_UNCLAIMED:
+        # A deployment that predates accounts kept one unscoped row, and it
+        # stays there until the first account claims it. Owner 0 *is* that
+        # deployment, so it has to keep reading the legacy row -- otherwise
+        # its credentials silently revert to whatever .env holds.
+        saved = stored(store, None)
     for field in FIELDS:
         value = saved.get(field)
         if value is None or (isinstance(value, str) and not value.strip()):
