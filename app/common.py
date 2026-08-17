@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from . import runtime
 from .config import Settings, settings
 from .kobo import KoboClient
 from .store import Store
@@ -19,13 +20,19 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def make_client(s: Settings = settings) -> KoboClient:
-    s.validate()
-    return KoboClient(s.kobo_url, s.kobo_token, verify=s.verify_tls, timeout=s.http_timeout)
-
-
 def make_store(s: Settings = settings) -> Store:
     return Store(s.db_path)
+
+
+def make_client(s: Settings = settings, store: Store | None = None) -> KoboClient:
+    """Build a Kobo client from the *effective* settings.
+
+    Credentials saved in the admin UI win over .env, so refresh from the
+    database before reading them -- another container may have changed them.
+    """
+    runtime.apply(store or make_store(s), s)
+    s.validate()
+    return KoboClient(s.kobo_url, s.kobo_token, verify=s.verify_tls, timeout=s.http_timeout)
 
 
 def submission_uuid(submission: dict) -> str | None:

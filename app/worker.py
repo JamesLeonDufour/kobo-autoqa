@@ -6,6 +6,7 @@ import signal
 import time
 from datetime import datetime, timedelta, timezone
 
+from . import runtime
 from .common import make_client, make_store, setup_logging, submission_uuid
 from .config import settings
 from .pipeline import Pipeline
@@ -55,19 +56,42 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    client = make_client(settings)
     store = make_store(settings)
-    pipeline = Pipeline(settings, client, store)
+    runtime.apply(store, settings, force=True)
 
-    log.info(
-        "Worker up. server=%s assets=%s transcript=%s translations=%s qual=%s dry_run=%s",
-        settings.kobo_url, settings.asset_uids or "(webhook only)",
-        settings.transcript_language, settings.translation_languages,
-        settings.enable_qual, settings.dry_run,
-    )
-
+    client = None
+    pipeline = None
     last_poll = 0.0
+    complained = False
+
+    log.info("Worker up. Waiting for usable Kobo credentials if none are set yet.")
+
     while _running:
+        # 0. Credentials may arrive (or change) at any time via the admin UI,
+        #    which writes to the shared database. Rebuild the client when they
+        #    do, and idle politely until there is something to connect with.
+        if runtime.apply(store, settings) or client is None:
+            if client is not None:
+                client.close()
+                client = None
+            try:
+                client = make_client(settings, store)
+            except RuntimeError as exc:
+                if not complained:
+                    log.warning("%s Idling until credentials are available.", exc)
+                    complained = True
+                time.sleep(settings.worker_tick_seconds)
+                continue
+            complained = False
+            pipeline = Pipeline(settings, client, store)
+            log.info(
+                "Connected. server=%s assets=%s transcript=%s translations=%s qual=%s dry_run=%s",
+                settings.kobo_url, settings.asset_uids or "(webhook only)",
+                settings.transcript_language, settings.translation_languages,
+                settings.enable_qual, settings.dry_run,
+            )
+            last_poll = 0.0
+
         # 1. Polling catch-up. Assets enabled in the admin UI are merged with
         #    whatever ASSET_UIDS lists, so either configuration path works.
         watched = sorted(set(settings.asset_uids) | set(store.watched_assets()))
@@ -91,7 +115,8 @@ def main() -> None:
         if not jobs:
             time.sleep(settings.worker_tick_seconds)
 
-    client.close()
+    if client is not None:
+        client.close()
     log.info("Worker stopped. Final job counts: %s", store.stats())
 
 

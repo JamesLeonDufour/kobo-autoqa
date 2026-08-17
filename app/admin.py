@@ -9,11 +9,12 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
 
 from . import payloads as P
+from . import runtime
 from .assetconf import defaults_from_env, resolve, save as save_cfg
 from .auth import COOKIE_NAME, check_password, issue_token, require_admin
 from .common import make_client, make_store, submission_uuid
 from .config import settings
-from .kobo import KoboError
+from .kobo import KoboClient, KoboError
 from .store import STAGE_NEW, STAGE_FAILED
 
 log = logging.getLogger(__name__)
@@ -33,9 +34,9 @@ def store():
 
 def _client():
     try:
-        return make_client(settings)
+        return make_client(settings, store())
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Kobo client unavailable: {exc}") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _kobo_guard(fn, *args, **kwargs):
@@ -78,6 +79,7 @@ def session() -> dict:
 # ---------------------------------------------------------------------------
 @guarded.get("/env")
 def env() -> dict:
+    runtime.apply(store(), settings)
     return {
         "kobo_url": settings.kobo_url,
         "token_set": bool(settings.kobo_token),
@@ -98,6 +100,67 @@ def ping() -> dict:
     with _client() as c:
         me = _kobo_guard(c._request, "GET", "/me/", params={"format": "json"})
     return {"ok": True, "username": (me or {}).get("username"), "server": settings.kobo_url}
+
+
+# ---------------------------------------------------------------------------
+# connection credentials (editable from the UI, stored in SQLite)
+# ---------------------------------------------------------------------------
+@guarded.get("/credentials")
+def get_credentials() -> dict:
+    runtime.apply(store(), settings)
+    return {"credentials": runtime.describe(store(), settings),
+            "env_defaults": {
+                k: ("" if k in runtime.SECRET_FIELDS else v)
+                for k, v in runtime.env_baseline().items()
+            }}
+
+
+@guarded.put("/credentials")
+def put_credentials(patch: dict = Body(...)) -> dict:
+    unknown = sorted(set(patch) - set(runtime.FIELDS))
+    if unknown:
+        raise HTTPException(status_code=400,
+                            detail=f"Not editable here: {', '.join(unknown)}")
+    url = str(patch.get("kobo_url", settings.kobo_url) or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400,
+                            detail="Server URL must start with http:// or https://")
+    runtime.save(store(), patch, settings)
+    return {"ok": True, "credentials": runtime.describe(store(), settings)}
+
+
+@guarded.delete("/credentials")
+def reset_credentials() -> dict:
+    """Forget every UI-entered value; .env takes over again."""
+    runtime.clear(store(), settings)
+    return {"ok": True, "credentials": runtime.describe(store(), settings)}
+
+
+@guarded.post("/credentials/test")
+def test_credentials(payload: dict = Body(default={})) -> dict:
+    """Try a candidate URL + token without saving anything."""
+    url = str(payload.get("kobo_url") or settings.kobo_url or "").strip().rstrip("/")
+    token = str(payload.get("kobo_token") or "").strip() or settings.kobo_token
+    verify = payload.get("verify_tls")
+    verify = settings.verify_tls if verify is None else bool(verify)
+
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Server URL must start with http(s)://")
+    if not token:
+        raise HTTPException(status_code=400, detail="No API token to test")
+
+    client = KoboClient(url, token, verify=verify, timeout=settings.http_timeout)
+    try:
+        me = client._request("GET", "/me/", params={"format": "json"}) or {}
+    except KoboError as exc:
+        detail = ("Token rejected by the server (401/403)."
+                  if exc.status in (401, 403) else str(exc))
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Cannot reach {url}: {exc}") from exc
+    finally:
+        client.close()
+    return {"ok": True, "username": me.get("username"), "email": me.get("email"), "server": url}
 
 
 # ---------------------------------------------------------------------------

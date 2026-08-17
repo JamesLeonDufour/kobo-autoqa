@@ -6,9 +6,10 @@ Kobo's own NLP jobs (AWS Transcribe → Google Translate → Bedrock AutoQA), an
 the results land back in the submission's `_supplementalDetails`, so they show
 up in the data table and in every export with no human clicking anything.
 
-Everything is configurable from a web UI at **`/admin/`** — pick a form, check
-what the server's NLP API accepts, build the analysis questions, register the
-webhook, then watch the queue. The CLI does the same things headlessly.
+Everything is configurable from a web UI at **`/admin/`** — enter your Kobo
+credentials, pick a form, check what the server's NLP API accepts, build the
+analysis questions, register the webhook, then watch the queue. The CLI does
+the same things headlessly.
 
 ## Architecture
 
@@ -63,7 +64,8 @@ duplicate webhooks, restarts, and overlapping polls cost nothing.
    key. AutoQA has been GA since 2.026.21 and each partner needs their own
    AWS Marketplace subscription for the Bedrock model.
 2. **An API token** for a user with `change_asset` + `view_submissions` on the
-   target forms: `GET /token/?format=json`.
+   target forms: `GET /token/?format=json`. Put it in `.env` or paste it into
+   the admin UI's Connection tab — either works.
 3. **A public HTTPS endpoint** if you want the webhook. Polling alone works
    behind NAT — just leave `PUBLIC_WEBHOOK_URL` empty and skip `register-hook`.
 
@@ -72,20 +74,27 @@ duplicate webhooks, restarts, and overlapping polls cost nothing.
 ## Setup — the UI route (recommended)
 
 ```bash
-tar xzf kobo-autoqa-pipeline.tar.gz && cd kobo-autoqa-pipeline
+git clone https://github.com/JamesLeonDufour/kobo-autoqa.git && cd kobo-autoqa
 cp .env.example .env
-$EDITOR .env      # KOBO_URL, KOBO_TOKEN, ADMIN_PASSWORD  — that is the minimum
+$EDITOR .env      # ADMIN_PASSWORD — that is the only required value
 docker compose up -d --build
 ```
 
 Open `http://127.0.0.1:8077/admin/` (or your NPM hostname) and sign in with
-`ADMIN_PASSWORD`. Everything else is done in the browser:
+`ADMIN_PASSWORD`. Everything else — including the Kobo server and API token —
+is done in the browser:
 
 | Tab | What it does |
 |---|---|
+| **Connection** | Kobo server URL, API token, TLS verification, and the webhook URL + shared secret. Test the credentials before saving. |
 | **Forms** | lists every survey on the server, with its submission count and whether the pipeline is set up on it |
 | **Setup** | a 7-step wizard for the selected form — see below |
 | **Monitor** | live queue tiles, per-submission stage, error detail, retry, and the raw `_supplementalDetails` Kobo currently holds |
+
+On a fresh install with no `KOBO_TOKEN` in `.env`, signing in drops you
+straight on the Connection tab. The worker idles quietly until credentials
+exist rather than crash-looping, and picks them up within one tick of you
+saving — no restart, no `docker compose` command.
 
 The Setup wizard steps:
 
@@ -111,6 +120,33 @@ in `.env` is optional and simply adds to that list.
 signed cookies keyed on the password itself, so changing the password logs
 everyone out. Set `ADMIN_COOKIE_SECURE=false` only if you browse over plain
 HTTP.
+
+### Where credentials live
+
+Two sources, and the UI wins:
+
+| Priority | Source | Notes |
+|---|---|---|
+| 1 | Connection tab | stored in `app_settings` in the SQLite volume, shared by both containers |
+| 2 | `.env` | used for any field the UI has not set |
+
+Blanking a field in the UI removes the override and falls back to `.env`;
+**Revert to .env** drops all of them at once. Secrets are never sent back to
+the browser — the form shows a masked hint (`ui-••••••456`) and only writes a
+new value when you actually type one, so saving the page without retyping your
+token does not wipe it.
+
+`ADMIN_PASSWORD` is deliberately **not** editable in the UI. It is the
+credential guarding that very screen, so keeping it in `.env` means a bad
+value can never lock you out of the box that fixes it.
+
+Two caveats worth knowing:
+
+- Tokens are stored **plaintext** in `/data/pipeline.db`, exactly as they would
+  be in `.env`. Treat the Docker volume as secret material and do not commit it.
+- Changing the webhook secret invalidates every already-registered Kobo REST
+  Service. Re-register them from the Setup tab, or Kobo keeps sending the old
+  header and collects 403s.
 
 ---
 
@@ -228,7 +264,7 @@ jobs instantly, so you can exercise the whole flow offline:
 ```bash
 pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
-python tests/test_admin_flow.py                # 24 assertions, all should PASS
+python tests/test_admin_flow.py                # 40 assertions, all should PASS
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \

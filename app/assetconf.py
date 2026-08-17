@@ -54,10 +54,12 @@ def resolve(s: Settings, store, asset_uid: str) -> AssetConfig:
     return cfg
 
 
-def save(store, asset_uid: str, patch: dict) -> AssetConfig:
+def save(store, asset_uid: str, patch: dict) -> dict:
+    """Merge a patch into the saved overrides. Returns the stored dict, which
+    holds only the keys the UI has set -- call resolve() for effective values."""
     current = store.get_asset_settings(asset_uid) or {}
     for key, value in patch.items():
         if key in FIELDS:
             current[key] = value
     store.set_asset_settings(asset_uid, current)
-    return current  # type: ignore[return-value]
+    return current

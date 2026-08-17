@@ -224,9 +224,10 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
   <strong>AutoQA pipeline</strong>
   <span id="connBadge" class="badge st-idle"><span class="dot"></span>checking…</span>
   <nav class="tabs" role="tablist">
-    <button class="tab" role="tab" data-tab="forms"   aria-selected="true">Forms</button>
-    <button class="tab" role="tab" data-tab="setup"   aria-selected="false">Setup</button>
-    <button class="tab" role="tab" data-tab="monitor" aria-selected="false">Monitor</button>
+    <button class="tab" role="tab" data-tab="forms"      aria-selected="true">Forms</button>
+    <button class="tab" role="tab" data-tab="setup"      aria-selected="false">Setup</button>
+    <button class="tab" role="tab" data-tab="monitor"    aria-selected="false">Monitor</button>
+    <button class="tab" role="tab" data-tab="connection" aria-selected="false">Connection</button>
   </nav>
   <span class="spacer"></span>
   <span id="dryBadge" class="badge hidden"><span class="dot"></span>Dry run</span>
@@ -393,6 +394,71 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
   </section>
 
   <!-- ---------------- MONITOR ---------------- -->
+  <!-- ---------------- CONNECTION ---------------- -->
+  <section id="tab-connection" class="hidden">
+    <div class="card">
+      <header><h1 style="margin:0">Connection</h1>
+        <span class="spacer"></span>
+        <span id="credSource" class="chip"></span>
+      </header>
+      <p class="muted small" style="margin-top:0">
+        Credentials entered here are stored in the pipeline database and take priority
+        over anything in <code>.env</code>. Leave a field blank to fall back to the
+        <code>.env</code> value. The API and worker both pick changes up within a few seconds.
+      </p>
+
+      <form id="credForm">
+        <h2 style="margin-bottom:2px">KoboToolbox</h2>
+        <div class="grid2" style="margin-top:8px">
+          <label class="field"><span>Server URL</span>
+            <input type="text" id="crKoboUrl" placeholder="https://kf.kobotoolbox.org"
+                   autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>API token <span id="crTokenState" class="muted"></span></span>
+            <input type="password" id="crKoboToken" placeholder="paste token to change"
+                   autocomplete="new-password" spellcheck="false"></label>
+        </div>
+        <label class="switch"><input type="checkbox" id="crVerifyTls"> Verify the server's TLS certificate</label>
+        <p class="muted small" style="margin-top:6px">
+          Find your token at <span class="mono">&lt;server&gt;/token/?format=json</span> while signed in to Kobo.
+        </p>
+
+        <h2 style="margin:18px 0 2px">Webhook</h2>
+        <div class="grid2" style="margin-top:8px">
+          <label class="field"><span>Public URL of this pipeline</span>
+            <input type="text" id="crPublicUrl" placeholder="https://autoqa.example.org"
+                   autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Shared secret <span id="crSecretState" class="muted"></span></span>
+            <input type="password" id="crWebhookSecret" placeholder="paste secret to change"
+                   autocomplete="new-password" spellcheck="false"></label>
+          <label class="field"><span>Secret header name</span>
+            <input type="text" id="crSecretHeader" placeholder="X-Pipeline-Secret"
+                   autocomplete="off" spellcheck="false"></label>
+        </div>
+        <p class="muted small" style="margin-top:0">
+          Changing the secret means every already-registered webhook must be re-registered
+          on the Setup tab, otherwise Kobo will keep sending the old one and get a 403.
+        </p>
+
+        <div class="row" style="margin-top:16px;gap:8px">
+          <button class="primary" type="submit" id="credSave">Save</button>
+          <button type="button" id="credTest">Test connection</button>
+          <button type="button" id="credReset">Revert to .env</button>
+          <span id="credState" class="small muted"></span>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <header><h2 style="margin:0">Admin password</h2></header>
+      <p class="muted small" style="margin:0">
+        Set with <span class="mono">ADMIN_PASSWORD</span> in <code>.env</code> and not editable here —
+        it protects this screen, so a deployment that had it in the database could be
+        locked out with no way back in. Change it in <code>.env</code> and restart;
+        every signed-in session is invalidated.
+      </p>
+    </div>
+  </section>
+
   <section id="tab-monitor" class="hidden">
     <div class="card">
       <header><h2>Queue</h2><span class="spacer" style="flex:1"></span>
@@ -526,9 +592,90 @@ try {
 $$(".tab").forEach(t => t.addEventListener("click", () => selectTab(t.dataset.tab)));
 function selectTab(name) {
   $$(".tab").forEach(t => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
-  ["forms","setup","monitor"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+  ["forms","setup","monitor","connection"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
   if (name === "monitor") loadJobs();
+  if (name === "connection") loadCredentials();
 }
+
+/* ---------------------------- connection ---------------------------- */
+const SOURCE_LABEL = { ui: "saved here", env: "from .env", default: "not set" };
+
+async function loadCredentials() {
+  let data;
+  try { data = await api("/credentials"); }
+  catch (e) { toast(e.message, "err"); return; }
+  const c = data.credentials;
+
+  $("#crKoboUrl").value      = c.kobo_url.value || "";
+  $("#crPublicUrl").value    = c.public_webhook_url.value || "";
+  $("#crSecretHeader").value = c.webhook_secret_header.value || "";
+  $("#crVerifyTls").checked  = !!c.verify_tls.value;
+
+  // Secrets are never sent back to the browser: show only whether one is set.
+  $("#crKoboToken").value = "";
+  $("#crWebhookSecret").value = "";
+  $("#crTokenState").textContent = c.kobo_token.set
+    ? `— ${c.kobo_token.hint} (${SOURCE_LABEL[c.kobo_token.source]})` : "— not set";
+  $("#crSecretState").textContent = c.webhook_secret.set
+    ? `— ${c.webhook_secret.hint} (${SOURCE_LABEL[c.webhook_secret.source]})`
+    : "— not set (webhook is unauthenticated)";
+
+  const fromUi = Object.values(c).filter(v => v && v.source === "ui").length;
+  $("#credSource").textContent = fromUi
+    ? `${fromUi} value(s) saved here, overriding .env` : "using .env values";
+}
+
+$("#credForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const patch = {
+    kobo_url: $("#crKoboUrl").value.trim(),
+    public_webhook_url: $("#crPublicUrl").value.trim(),
+    webhook_secret_header: $("#crSecretHeader").value.trim(),
+    verify_tls: $("#crVerifyTls").checked,
+  };
+  // Only send a secret when the user actually typed one, so saving the form
+  // without retyping it does not wipe the stored value.
+  if ($("#crKoboToken").value) patch.kobo_token = $("#crKoboToken").value.trim();
+  if ($("#crWebhookSecret").value) patch.webhook_secret = $("#crWebhookSecret").value.trim();
+
+  const btn = $("#credSave"); btn.disabled = true;
+  $("#credState").textContent = "Saving…";
+  try {
+    await api("/credentials", { method: "PUT", body: JSON.stringify(patch) });
+    $("#credState").textContent = "";
+    toast("Connection settings saved.", "ok");
+    await loadCredentials();
+    await boot();
+  } catch (err) {
+    $("#credState").textContent = "";
+    toast(err.message, "err");
+  } finally { btn.disabled = false; }
+});
+
+$("#credTest").addEventListener("click", async () => {
+  const btn = $("#credTest"); btn.disabled = true;
+  $("#credState").textContent = "Testing…";
+  try {
+    const body = { kobo_url: $("#crKoboUrl").value.trim(), verify_tls: $("#crVerifyTls").checked };
+    if ($("#crKoboToken").value) body.kobo_token = $("#crKoboToken").value.trim();
+    const r = await api("/credentials/test", { method: "POST", body: JSON.stringify(body) });
+    $("#credState").textContent = "";
+    toast(`Connected to ${new URL(r.server).host} as ${r.username}.`, "ok");
+  } catch (e) {
+    $("#credState").textContent = "";
+    toast(e.message, "err");
+  } finally { btn.disabled = false; }
+});
+
+$("#credReset").addEventListener("click", async () => {
+  if (!confirm("Discard the credentials saved here and go back to the .env values?")) return;
+  try {
+    await api("/credentials", { method: "DELETE" });
+    toast("Reverted to .env values.", "ok");
+    await loadCredentials();
+    await boot();
+  } catch (e) { toast(e.message, "err"); }
+});
 
 /* ------------------------------- forms ------------------------------- */
 async function loadAssets() {
@@ -874,13 +1021,24 @@ async function boot() {
   $("#dryBadge").classList.toggle("hidden", !ENV.dry_run);
   if (ENV.dry_run) $("#dryBadge").className = "badge st-warning";
 
+  // No token anywhere yet: send the operator straight to the Connection tab
+  // instead of showing an empty, broken-looking form list.
+  if (!ENV.token_set) {
+    $("#connBadge").className = "badge st-warning";
+    $("#connBadge").innerHTML = `<span class="dot"></span>No credentials`;
+    selectTab("connection");
+    toast("Enter your KoboToolbox server and API token to get started.");
+    setupTimer();
+    return;
+  }
+
   api("/ping").then(p => {
     $("#connBadge").className = "badge st-good";
     $("#connBadge").innerHTML = `<span class="dot"></span>${esc(p.username || "connected")} @ ${esc(new URL(p.server).host)}`;
   }).catch(e => {
     $("#connBadge").className = "badge st-critical";
     $("#connBadge").innerHTML = `<span class="dot"></span>Kobo unreachable`;
-    toast("Cannot reach KoboToolbox: " + e.message, "err");
+    toast("Cannot reach KoboToolbox: " + e.message + " — check the Connection tab.", "err");
   });
 
   await loadAssets();

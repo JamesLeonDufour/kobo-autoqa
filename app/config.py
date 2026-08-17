@@ -72,9 +72,12 @@ class Settings:
 
     def validate(self) -> None:
         if not self.kobo_token:
-            raise RuntimeError("KOBO_TOKEN is required")
+            raise RuntimeError(
+                "No Kobo API token. Set KOBO_TOKEN in .env, or enter one on the "
+                "Connection tab of the admin UI."
+            )
         if not self.kobo_url.startswith("http"):
-            raise RuntimeError("KOBO_URL must be a full http(s) URL")
+            raise RuntimeError("Kobo server URL must be a full http(s) URL")
 
 
 settings = Settings()

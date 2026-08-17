@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS asset_settings (
     config     TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    config     TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -173,6 +179,34 @@ class Store:
             uid for uid, cfg in self.all_asset_settings().items()
             if cfg.get("enabled", True)
         )
+
+    # -- global app settings (UI-managed connection credentials) ------------
+    def get_app_settings(self, key: str) -> dict:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT config FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+        return json.loads(row["config"]) if row else {}
+
+    def app_settings_updated_at(self, key: str) -> float:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT updated_at FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+        return row["updated_at"] if row else 0.0
+
+    def set_app_settings(self, key: str, config: dict) -> None:
+        with self._lock, self._conn() as c:
+            c.execute(
+                "INSERT INTO app_settings (key, config, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET config = excluded.config, "
+                "updated_at = excluded.updated_at",
+                (key, json.dumps(config), time.time()),
+            )
+
+    def delete_app_settings(self, key: str) -> None:
+        with self._lock, self._conn() as c:
+            c.execute("DELETE FROM app_settings WHERE key = ?", (key,))
 
     # -- poll cursor --------------------------------------------------------
     def get_cursor(self, asset_uid: str) -> str | None:

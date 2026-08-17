@@ -11,11 +11,13 @@ work inside the request.
 from __future__ import annotations
 
 import logging
+import secrets
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
+from . import runtime
 from .admin import guarded as admin_guarded, router as admin_public
 from .common import make_store, setup_logging, submission_uuid
 from .config import settings
@@ -47,7 +49,14 @@ def store() -> Store:
     global _store
     if _store is None:
         _store = make_store(settings)
+        runtime.apply(_store, settings, force=True)
     return _store
+
+
+@app.on_event("startup")
+def _load_runtime_settings() -> None:
+    """Pull UI-saved credentials into `settings` before serving traffic."""
+    store()
 
 
 @app.get("/healthz")
@@ -61,9 +70,12 @@ async def receive(
     request: Request,
     payload: dict = Body(...),
 ) -> dict:
+    # The secret is editable from the admin UI, so read the effective value.
+    runtime.apply(store(), settings)
+
     if settings.webhook_secret:
         provided = request.headers.get(settings.webhook_secret_header, "")
-        if provided != settings.webhook_secret:
+        if not secrets.compare_digest(provided, settings.webhook_secret):
             log.warning("Rejected hook for %s: bad or missing secret header", asset_uid)
             raise HTTPException(status_code=403, detail="forbidden")
 

@@ -116,6 +116,59 @@ async def main():
         r = await c.post(f"/kobo/hook/{U}", json={"_uuid": "x"}, headers={"X-Pipeline-Secret": "bad"})
         fails += not ok("hook rejects bad secret", r.status_code == 403)
 
+        print("\n[credentials]")
+        cr = (await c.get("/admin/api/credentials")).json()["credentials"]
+        fails += not ok("token reported as set from env",
+                        cr["kobo_token"]["set"] and cr["kobo_token"]["source"] == "env",
+                        cr["kobo_token"]["source"])
+        fails += not ok("token value never sent to browser",
+                        "value" not in cr["kobo_token"] and "x" not in cr["kobo_token"]["hint"])
+        fails += not ok("url shown from env",
+                        cr["kobo_url"]["value"] == os.environ["KOBO_URL"], cr["kobo_url"]["value"])
+
+        r = await c.post("/admin/api/credentials/test",
+                         json={"kobo_url": os.environ["KOBO_URL"], "kobo_token": "anything"})
+        fails += not ok("test connection succeeds", r.json().get("username") == "mockuser")
+        r = await c.post("/admin/api/credentials/test",
+                         json={"kobo_url": "http://127.0.0.1:9", "kobo_token": "t"})
+        fails += not ok("test connection reports failure", r.status_code == 502)
+        r = await c.post("/admin/api/credentials/test", json={"kobo_url": "not-a-url"})
+        fails += not ok("bad url rejected", r.status_code == 400)
+
+        r = await c.put("/admin/api/credentials", json={"admin_password": "hack"})
+        fails += not ok("admin password not editable", r.status_code == 400)
+
+        r = await c.put("/admin/api/credentials", json={
+            "kobo_url": os.environ["KOBO_URL"], "kobo_token": "ui-token-123456",
+            "webhook_secret": "ui-secret", "verify_tls": True})
+        cr = r.json()["credentials"]
+        fails += not ok("saved values marked as ui-sourced",
+                        cr["kobo_token"]["source"] == "ui" and cr["webhook_secret"]["source"] == "ui")
+        fails += not ok("secret hint is masked",
+                        cr["kobo_token"]["hint"] == "ui-••••••456", cr["kobo_token"]["hint"])
+
+        # the running app must now actually use the value entered in the UI
+        from app.config import settings as live  # noqa: PLC0415
+        fails += not ok("live settings picked up new token", live.kobo_token == "ui-token-123456")
+        r = await c.post(f"/kobo/hook/{U}", json={"_uuid": "sub-ui"},
+                         headers={"X-Pipeline-Secret": "ui-secret"})
+        fails += not ok("webhook honours the UI secret", r.status_code == 200, r.text)
+        r = await c.post(f"/kobo/hook/{U}", json={"_uuid": "sub-ui"},
+                         headers={"X-Pipeline-Secret": "s3cret"})
+        fails += not ok("old .env secret no longer accepted", r.status_code == 403)
+
+        # blank string clears an override rather than blanking the .env value
+        r = await c.put("/admin/api/credentials", json={"kobo_token": ""})
+        fails += not ok("blank field falls back to env",
+                        r.json()["credentials"]["kobo_token"]["source"] == "env" and live.kobo_token == "x",
+                        live.kobo_token)
+
+        r = await c.delete("/admin/api/credentials")
+        cr = r.json()["credentials"]
+        fails += not ok("revert restores every env value",
+                        all(v.get("source") != "ui" for v in cr.values() if isinstance(v, dict))
+                        and live.webhook_secret == "s3cret", live.webhook_secret)
+
         print("\n[logout]")
         await c.post("/admin/api/logout")
         fails += not ok("session cleared", (await c.get("/admin/api/env")).status_code == 401)
