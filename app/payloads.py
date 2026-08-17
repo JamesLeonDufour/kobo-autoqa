@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 
 LEGACY = "legacy"
 V20250820 = "20250820"
+# Current kpi: advanced-features + data/<uuid>/supplement/. See app/supplement.py.
+SUPPLEMENT = "supplement"
 
 STATUS_REQUESTED = "requested"
 STATUS_IN_PROGRESS = "in_progress"

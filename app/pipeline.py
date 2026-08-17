@@ -9,6 +9,7 @@ from .assetconf import AssetConfig, resolve as resolve_asset_config
 from .config import Settings
 from .kobo import KoboClient, KoboError
 from . import payloads as P
+from . import supplement as S
 from .store import (
     Store, STAGE_NEW, STAGE_TRANSCRIBE, STAGE_TRANSLATE, STAGE_QUAL,
     STAGE_DONE, STAGE_FAILED,
@@ -25,6 +26,8 @@ class AssetContext:
     dialect: str
     cfg: AssetConfig
     fetched_at: float
+    # Only set for the `supplement` dialect: what the server has configured.
+    features: S.AssetFeatures | None = None
 
 
 class Pipeline:
@@ -50,6 +53,21 @@ class Pipeline:
         xpaths = cfg.xpaths or P.configured_xpaths(advanced, P.media_question_xpaths(asset))
 
         dialect = cfg.schema_dialect
+        features: S.AssetFeatures | None = None
+
+        # Current kpi builds expose /advanced-features/ and have dropped the
+        # advanced_submission_* endpoints entirely, so probe for it first --
+        # it is a cheap, definitive answer where schema sniffing is a guess.
+        if dialect in ("auto", P.SUPPLEMENT):
+            try:
+                features = S.AssetFeatures(self.client.list_advanced_features(asset_uid))
+                dialect = P.SUPPLEMENT
+            except KoboError as exc:
+                if dialect == P.SUPPLEMENT:
+                    raise
+                log.debug("No advanced-features endpoint on %s (%s)", asset_uid, exc.status)
+                features = None
+
         if dialect == "auto":
             try:
                 schema = self.client.get_advanced_submission_schema(asset_uid)
@@ -57,6 +75,13 @@ class Pipeline:
                 log.warning("Schema introspection failed for %s: %s", asset_uid, exc)
                 schema = None
             dialect = P.detect_dialect(schema)
+
+        if features is not None:
+            if not features:
+                features = self._provision_features(asset_uid, asset, cfg)
+            xpaths = [x for x in features.xpaths if not cfg.xpaths or x in cfg.xpaths]
+            log.info("Asset %s: supplement API, %s", asset_uid, features.describe())
+        else:
             log.info("Asset %s: using %r payload dialect", asset_uid, dialect)
 
         ctx = AssetContext(
@@ -66,9 +91,40 @@ class Pipeline:
             dialect=dialect,
             cfg=cfg,
             fetched_at=time.time(),
+            features=features,
         )
         self._assets[asset_uid] = ctx
         return ctx
+
+    def _provision_features(self, asset_uid: str, asset: dict,
+                            cfg: AssetConfig) -> S.AssetFeatures:
+        """Configure transcription/translation on a form that has none yet.
+
+        Only runs when the server reports an empty advanced-features list, so
+        it never disturbs a configuration set up by hand. Qualitative questions
+        are not invented here -- they carry uuids the server owns.
+        """
+        targets = cfg.xpaths or P.media_question_xpaths(asset)
+        if not targets:
+            return S.AssetFeatures([])
+        if self.s.dry_run:
+            log.info("[DRY RUN] would configure transcription on %s for %s", asset_uid, targets)
+            return S.AssetFeatures([])
+
+        language, _ = S.split_language(cfg.transcript_language)
+        for xpath in targets:
+            self.client.create_advanced_feature(
+                asset_uid, question_xpath=xpath, action=S.ACTION_TRANSCRIBE,
+                params=[{"language": language}],
+            )
+            if cfg.translation_languages:
+                self.client.create_advanced_feature(
+                    asset_uid, question_xpath=xpath, action=S.ACTION_TRANSLATE,
+                    params=[{"language": S.split_language(l)[0]}
+                            for l in cfg.translation_languages],
+                )
+        log.info("Configured transcription on %s for %s", asset_uid, targets)
+        return S.AssetFeatures(self.client.list_advanced_features(asset_uid))
 
     # -- job driver ---------------------------------------------------------
     def process(self, asset_uid: str, submission_uuid: str, stage: str, attempts: int) -> None:
@@ -89,16 +145,22 @@ class Pipeline:
                                    error="no transcribable questions on this form")
                 return
 
-            supplement = self.client.get_supplement(asset_uid, submission_uuid)
-
-            if stage in (STAGE_NEW, STAGE_TRANSCRIBE):
-                next_stage, delay = self._do_transcribe(ctx, submission_uuid, supplement)
-            elif stage == STAGE_TRANSLATE:
-                next_stage, delay = self._do_translate(ctx, submission_uuid, supplement)
-            elif stage == STAGE_QUAL:
-                next_stage, delay = self._do_qual(ctx, submission_uuid, supplement)
+            if ctx.dialect == P.SUPPLEMENT:
+                supplement = self.client.get_data_supplement(asset_uid, submission_uuid)
             else:
-                next_stage, delay = STAGE_DONE, 0.0
+                supplement = self.client.get_supplement(asset_uid, submission_uuid)
+
+            new_api = ctx.dialect == P.SUPPLEMENT
+            if stage in (STAGE_NEW, STAGE_TRANSCRIBE):
+                handler = self._sup_transcribe if new_api else self._do_transcribe
+            elif stage == STAGE_TRANSLATE:
+                handler = self._sup_translate if new_api else self._do_translate
+            elif stage == STAGE_QUAL:
+                handler = self._sup_qual if new_api else self._do_qual
+            else:
+                handler = None
+            next_stage, delay = (handler(ctx, submission_uuid, supplement)
+                                 if handler else (STAGE_DONE, 0.0))
 
             self.store.advance(asset_uid, submission_uuid, next_stage,
                                delay=delay, error=None, bump_attempts=True)
@@ -115,7 +177,88 @@ class Pipeline:
             self.store.advance(asset_uid, submission_uuid, stage or STAGE_NEW,
                                delay=300, error=repr(exc)[:1000], bump_attempts=True)
 
-    # -- stages -------------------------------------------------------------
+    # -- stages: current API (supplement dialect) ---------------------------
+    def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float]:
+        pending = False
+        for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
+            status, _text = S.transcript_state(sup, xpath)
+            if S.is_done(status):
+                # A finished transcript is not usable downstream until it is
+                # accepted; translation 400s against an unaccepted one.
+                if not S.transcript_accepted(sup, xpath):
+                    self._patch(ctx.uid, uuid, S.accept_transcript_body(xpath, language),
+                                f"accept transcript {xpath} [{language}]")
+                    pending = True
+                continue
+            if S.is_pending(status):
+                pending = True
+                continue
+            self._patch(ctx.uid, uuid, S.transcribe_body(xpath, language),
+                        f"transcribe {xpath} [{language}]")
+            pending = True
+
+        if pending:
+            return STAGE_TRANSCRIBE, self.s.async_poll_seconds
+        return (STAGE_TRANSLATE if (ctx.features and ctx.features.translate) else STAGE_QUAL), 2.0
+
+    def _sup_translate(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float]:
+        pending = False
+        for xpath, languages in (ctx.features.translate if ctx.features else {}).items():
+            # Nothing to translate from until an *accepted* transcript exists.
+            if not S.transcript_accepted(sup, xpath):
+                continue
+            for language in languages:
+                status = S.translation_state(sup, xpath, language)
+                if S.is_done(status):
+                    if not S.translation_accepted(sup, xpath, language):
+                        self._patch(ctx.uid, uuid,
+                                    S.accept_translation_body(xpath, language),
+                                    f"accept translation {xpath} [{language}]")
+                        pending = True
+                    continue
+                if S.is_pending(status):
+                    pending = True
+                    continue
+                self._patch(ctx.uid, uuid, S.translate_body(xpath, language),
+                            f"translate {xpath} -> {language}")
+                pending = True
+
+        if pending:
+            return STAGE_TRANSLATE, self.s.async_poll_seconds
+        return STAGE_QUAL, 2.0
+
+    def _sup_qual(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float]:
+        if not ctx.cfg.enable_qual:
+            return STAGE_DONE, 0.0
+        pending = False
+        for xpath, question_uuids in (ctx.features.qual if ctx.features else {}).items():
+            if not S.transcript_accepted(sup, xpath):
+                continue
+            for question_uuid in question_uuids:
+                status = S.qual_state(sup, xpath, question_uuid)
+                if S.is_done(status):
+                    continue
+                if S.is_pending(status):
+                    pending = True
+                    continue
+                # The schema takes one uuid per request, so this is one PATCH
+                # per analysis question.
+                self._patch(ctx.uid, uuid, S.qual_body(xpath, question_uuid),
+                            f"qual {xpath} [{question_uuid[:8]}]")
+                pending = True
+
+        if pending:
+            return STAGE_QUAL, self.s.async_poll_seconds
+        return STAGE_DONE, 0.0
+
+    def _patch(self, asset_uid: str, root_uuid: str, payload: dict, label: str) -> None:
+        if self.s.dry_run:
+            log.info("[DRY RUN] %s -> PATCH %s", label, payload)
+            return
+        log.info("PATCH %s/%s: %s", asset_uid, root_uuid, label)
+        self.client.patch_data_supplement(asset_uid, root_uuid, payload)
+
+    # -- stages: older APIs -------------------------------------------------
     def _do_transcribe(self, ctx: AssetContext, uuid: str, supplement: dict) -> tuple[str, float]:
         pending = False
         for xpath in ctx.xpaths:

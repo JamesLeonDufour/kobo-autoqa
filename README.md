@@ -355,6 +355,7 @@ jobs instantly, so you can exercise the whole flow offline:
 pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
 python tests/test_admin_flow.py                # 40 assertions, all should PASS
+python tests/test_supplement_flow.py           # 16 assertions, current NLP API
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \
@@ -376,15 +377,93 @@ the Setup tab pauses a form without losing its configuration.
 
 ---
 
+## Which NLP API your server speaks
+
+kpi has shipped three generations of the automated-NLP API. The pipeline
+implements all three and picks one per form at runtime, so you normally do not
+need to care — but when something 404s, this is the table to read.
+
+| Dialect | Configure with | Trigger with | Seen on |
+|---|---|---|---|
+| `supplement` | `POST /assets/{uid}/advanced-features/` | `PATCH /assets/{uid}/data/{root_uuid}/supplement/` | current kpi |
+| `20250820` | `advanced_features` on the asset | `POST /assets/{uid}/advanced_submission_post/` | interim releases |
+| `legacy` | `advanced_features` on the asset | same, with `googlets` / `googletx` keys | kpi 2.024–2.026 |
+
+Detection probes `/advanced-features/` first, because a 200 there is a
+definitive answer where sniffing the submission schema is a guess. Pin it with
+`SCHEMA_DIALECT` if you need to.
+
+### The `supplement` dialect
+
+Three things differ from the older dialects, and they are the reason the older
+payloads fail against a current server:
+
+- The submission uuid moved out of the request body and into the URL path.
+- There is no `status: "requested"`. Issuing the `PATCH` *is* the request, and
+  `language` is the only required field.
+- Language and locale are separate fields, so `fr-FR` is sent as
+  `{"language": "fr", "locale": "FR"}`.
+
+A transcription request looks like this in full:
+
+```
+PATCH /api/v2/assets/<uid>/data/<root_uuid>/supplement/
+{"_version": "20250820",
+ "main_impacts": {"automatic_google_transcription": {"language": "en"}}}
+```
+
+Results come back as an append-only `_versions` list per action, newest last,
+each wrapping a `_data` object whose `status` is `in_progress`, `complete`,
+`failed`, or `deleted`. Translations are keyed by language and qualitative
+answers by question uuid. Qualitative analysis is requested one question at a
+time — the schema accepts a single `uuid`, not a list.
+
+**A finished result is not usable until it is accepted.** A completed
+transcript sits unaccepted (no `_dateAccepted` on its latest version) and
+anything downstream refuses to run against it:
+
+```
+PATCH .../supplement/  {"_version": "20250820",
+  "main_impacts": {"automatic_google_translation": {"language": "es"}}}
+-> 400 {"detail": "No transcription found"}
+```
+
+despite the transcript being right there with `status: "complete"`. So the
+sequence per question is really: request transcription → wait → **accept it**
+→ request each translation → wait → **accept each** → request each analysis
+question. The pipeline does all of that unattended; the acceptance steps are
+the ones that are easy to miss when reading the schema alone.
+
+On this dialect the **server owns the configuration**. The pipeline reads
+`/advanced-features/` to learn which questions to transcribe, which languages
+to translate into, and which analysis questions to run, rather than imposing
+its own. That matters most for the analysis questions, whose uuids have to
+match the ones the server already holds. If a form has *no* advanced-features
+rows at all, the pipeline creates the transcription and translation rows from
+that form's settings; it never invents analysis questions.
+
+---
+
 ## Known version sensitivity
 
-`kobo/apps/subsequences/` was refactored upstream — `main` now carries a
-`SCHEMA_VERSIONS = ['20250820', None]` constant and an `Action` enum
-(`automatic_google_transcription`, `automatic_google_translation`,
-`automatic_bedrock_qual`) where earlier releases used the `googlets` /
-`googletx` keys. `app/payloads.py` implements both and picks at runtime, but
-**run `introspect` against your actual server before trusting the qual payload
-shape** — the AutoQA trigger is the newest and least-documented part of the
-API. If it rejects the payload, the error body from
-`advanced_submission_post` names the accepted keys; adjust
-`app/payloads.py::qual_payload` or set `QUAL_TRIGGER_KEY`.
+`kobo/apps/subsequences/` has been refactored upstream more than once. The two
+older shapes live in `app/payloads.py` and the current one in
+`app/supplement.py`; see the dialect table above.
+
+**Check what your server accepts before trusting any of it.** Current kpi
+publishes a full OpenAPI document, which is the fastest way to settle a
+question:
+
+```bash
+curl -sH "Authorization: Token $KOBO_TOKEN" \
+  "$KOBO_URL/api/v2/schema/?format=json" | jq '.paths | keys[]' | grep -Ei 'advanced|supplement'
+```
+
+If that returns paths, your server speaks the `supplement` dialect. If it
+404s, fall back to `python -m app.cli introspect <asset_uid>`, which prints the
+older `advanced_submission_schema`. A server that has neither does not have
+automated NLP enabled at all.
+
+Symptoms of a dialect mismatch are distinctive: every request 404s while the
+asset itself reads fine, and the 404 body is an HTML page rather than JSON —
+that means Django never routed the request to the API.

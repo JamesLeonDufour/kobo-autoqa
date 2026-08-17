@@ -13,7 +13,8 @@ from __future__ import annotations
 import copy
 import uuid
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
@@ -23,7 +24,16 @@ STATE = {
     "advanced_features": {},
     "hooks": [],
     "supplements": {},
+    # "legacy"     -> advanced_submission_post, like kpi 2.024-2.026
+    # "supplement" -> advanced-features + data/<uuid>/supplement/, like current
+    #                 kpi, where the older endpoints are gone entirely
+    "api_mode": "legacy",
+    "features": [],       # advanced-features rows
+    "supplements_v2": {},  # root_uuid -> supplement document
 }
+
+QUAL_UUIDS = ["11111111-1111-4111-8111-111111111111",
+              "22222222-2222-4222-8222-222222222222"]
 
 SURVEY = [
     {"type": "start", "name": "start"},
@@ -59,7 +69,32 @@ def reset():
     STATE["advanced_features"] = {}
     STATE["hooks"] = []
     STATE["supplements"] = {}
+    STATE["api_mode"] = "legacy"
+    STATE["features"] = []
+    STATE["supplements_v2"] = {}
     return {"ok": True}
+
+
+@app.post("/__mode/{mode}")
+def set_mode(mode: str, preconfigure: bool = True):
+    """Test-only: switch which generation of the NLP API this server pretends
+    to be. `supplement` also seeds a configuration, the way a real server does
+    when someone has already set the form up in Kobo's own UI."""
+    STATE["api_mode"] = mode
+    STATE["features"] = []
+    STATE["supplements_v2"] = {}
+    if mode == "supplement" and preconfigure:
+        STATE["features"] = [
+            {"uid": "qaf1", "question_xpath": "section_a/Recording_001",
+             "action": "automatic_google_transcription", "params": [{"language": "fr"}]},
+            {"uid": "qaf2", "question_xpath": "section_a/Recording_001",
+             "action": "automatic_google_translation",
+             "params": [{"language": "en"}, {"language": "es"}]},
+            {"uid": "qaf3", "question_xpath": "section_a/Recording_001",
+             "action": "automatic_bedrock_qual",
+             "params": [{"uuid": u} for u in QUAL_UUIDS]},
+        ]
+    return {"ok": True, "mode": mode, "features": len(STATE["features"])}
 
 
 @app.get("/me/")
@@ -95,7 +130,128 @@ def patch_asset(uid: str, body: dict = Body(...)):
 
 @app.get("/api/v2/assets/{uid}/advanced_submission_schema/")
 def schema(uid: str):
+    if STATE["api_mode"] == "supplement":
+        # Current kpi does not route this at all; it falls through to the SPA.
+        return HTMLResponse("<!doctype html><html>Not found</html>", status_code=404)
     return SCHEMA
+
+
+# ---------------------------------------------------------------------------
+# current kpi API: advanced-features + per-submission supplement
+# ---------------------------------------------------------------------------
+def _require_new_api():
+    if STATE["api_mode"] != "supplement":
+        raise HTTPException(status_code=404, detail="Resource not found (404)")
+
+
+def _require_legacy_api():
+    """A current server has removed these endpoints entirely."""
+    if STATE["api_mode"] == "supplement":
+        raise HTTPException(status_code=404, detail="Resource not found (404)")
+
+
+@app.get("/api/v2/assets/{uid}/advanced-features/")
+def list_features(uid: str):
+    _require_new_api()
+    return STATE["features"]
+
+
+@app.post("/api/v2/assets/{uid}/advanced-features/")
+def create_feature(uid: str, body: dict = Body(...)):
+    _require_new_api()
+    row = {**body, "uid": "qaf" + uuid.uuid4().hex[:16]}
+    STATE["features"].append(row)
+    return row
+
+
+def _version(data: dict) -> dict:
+    # A fresh version is unaccepted: real servers omit _dateAccepted entirely.
+    return {"_dateCreated": "2026-08-17T12:00:00Z",
+            "_uuid": str(uuid.uuid4()), "_data": data}
+
+
+def _is_accepted(slot: dict | None) -> bool:
+    versions = (slot or {}).get("_versions") or []
+    return bool(versions and versions[-1].get("_dateAccepted"))
+
+
+def _accept(slot: dict) -> None:
+    versions = slot.get("_versions") or []
+    if not versions:
+        raise HTTPException(status_code=400, detail="nothing to accept")
+    if (versions[-1].get("_data") or {}).get("status") != "complete":
+        raise HTTPException(status_code=400, detail="cannot accept an unfinished job")
+    versions[-1]["_dateAccepted"] = "2026-08-17T12:00:05Z"
+
+
+def _advance(node: dict, done: dict) -> None:
+    """Move an in_progress action to complete, mimicking Kobo finishing a job."""
+    last = (node.get("_versions") or [{}])[-1].get("_data") or {}
+    if last.get("status") == "in_progress":
+        node["_versions"].append(_version({**last, **done, "status": "complete"}))
+
+
+@app.get("/api/v2/assets/{uid}/data/{root_uuid}/supplement/")
+def get_supplement_v2(uid: str, root_uuid: str):
+    _require_new_api()
+    doc = STATE["supplements_v2"].get(root_uuid)
+    if doc is None:
+        return {}
+    # Anything requested since the last poll is now finished.
+    for xpath, actions in doc.items():
+        if xpath == "_version":
+            continue
+        if "automatic_google_transcription" in actions:
+            _advance(actions["automatic_google_transcription"],
+                     {"value": "Bonjour, la situation est difficile."})
+        for lang, node in (actions.get("automatic_google_translation") or {}).items():
+            _advance(node, {"value": f"[{lang}] Hello, the situation is difficult."})
+        for quid, node in (actions.get("automatic_bedrock_qual") or {}).items():
+            _advance(node, {"uuid": quid, "value": "AI answer"})
+    return doc
+
+
+@app.patch("/api/v2/assets/{uid}/data/{root_uuid}/supplement/")
+def patch_supplement_v2(uid: str, root_uuid: str, body: dict = Body(...)):
+    _require_new_api()
+    if body.get("_version") != "20250820":
+        raise HTTPException(status_code=400, detail="_version is required")
+    doc = STATE["supplements_v2"].setdefault(root_uuid, {"_version": "20250820"})
+    for xpath, actions in body.items():
+        if xpath == "_version":
+            continue
+        node = doc.setdefault(xpath, {})
+        for action, payload in actions.items():
+            if action == "automatic_google_transcription":
+                slot = node.setdefault(action, {"_versions": []})
+                if payload.get("accepted"):
+                    _accept(slot)
+                    continue
+                slot["_versions"].append(_version({**payload, "status": "in_progress"}))
+            elif action == "automatic_google_translation":
+                lang = payload.get("language")
+                if not lang:
+                    raise HTTPException(status_code=400, detail="language is required")
+                slot = node.setdefault(action, {}).setdefault(lang, {"_versions": []})
+                if payload.get("accepted"):
+                    _accept(slot)
+                    continue
+                # Real servers refuse to translate from an unaccepted transcript.
+                if not _is_accepted(node.get("automatic_google_transcription")):
+                    raise HTTPException(status_code=400,
+                                        detail="No transcription found")
+                slot["_versions"].append(_version({**payload, "status": "in_progress"}))
+            elif action == "automatic_bedrock_qual":
+                quid = payload.get("uuid")
+                if not quid:
+                    raise HTTPException(status_code=400, detail="uuid is required")
+                if not _is_accepted(node.get("automatic_google_transcription")):
+                    raise HTTPException(status_code=400, detail="No transcription found")
+                slot = node.setdefault(action, {}).setdefault(quid, {"_versions": []})
+                slot["_versions"].append(_version({"uuid": quid, "status": "in_progress"}))
+            else:
+                raise HTTPException(status_code=400, detail=f"unknown action {action}")
+    return doc
 
 
 @app.get("/api/v2/assets/{uid}/data/")
@@ -111,11 +267,13 @@ def data(uid: str, limit: int = 100, start: int = 0,
 
 @app.get("/api/v2/assets/{uid}/advanced_submission_post/")
 def get_supplement(uid: str, submission: str = ""):
+    _require_legacy_api()
     return STATE["supplements"].get(submission, {})
 
 
 @app.post("/api/v2/assets/{uid}/advanced_submission_post/")
 def post_supplement(uid: str, body: dict = Body(...)):
+    _require_legacy_api()
     sub = body.get("submission")
     cur = STATE["supplements"].setdefault(sub, {"submission": sub})
     for xpath, actions in body.items():

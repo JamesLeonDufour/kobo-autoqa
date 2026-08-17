@@ -144,6 +144,52 @@ class KoboClient:
             json=payload,
         ) or {}
 
+    # -- advanced features / supplements (current kpi API) ------------------
+    def list_advanced_features(self, asset_uid: str) -> list[dict]:
+        """Configured NLP actions for an asset. 404 = this server is older."""
+        data = self._request(
+            "GET", f"/api/v2/assets/{asset_uid}/advanced-features/",
+            params={"format": "json"},
+        )
+        if isinstance(data, dict):
+            return data.get("results") or []
+        return data or []
+
+    def create_advanced_feature(
+        self, asset_uid: str, *, question_xpath: str, action: str, params: list[dict]
+    ) -> dict:
+        return self._request(
+            "POST", f"/api/v2/assets/{asset_uid}/advanced-features/",
+            params={"format": "json"},
+            json={"question_xpath": question_xpath, "action": action, "params": params},
+        )
+
+    def update_advanced_feature(self, asset_uid: str, feature_uid: str,
+                                params: list[dict]) -> dict:
+        return self._request(
+            "PATCH", f"/api/v2/assets/{asset_uid}/advanced-features/{quote(feature_uid)}/",
+            params={"format": "json"}, json={"params": params},
+        )
+
+    def get_data_supplement(self, asset_uid: str, root_uuid: str) -> dict:
+        """Current NLP results for one submission. 404 when the uuid is unknown."""
+        try:
+            return self._request(
+                "GET", f"/api/v2/assets/{asset_uid}/data/{quote(root_uuid)}/supplement/",
+                params={"format": "json"},
+            ) or {}
+        except KoboError as exc:
+            if exc.status == 404:
+                return {}
+            raise
+
+    def patch_data_supplement(self, asset_uid: str, root_uuid: str, payload: dict) -> dict:
+        """Request transcription / translation / qual for one submission."""
+        return self._request(
+            "PATCH", f"/api/v2/assets/{asset_uid}/data/{quote(root_uuid)}/supplement/",
+            params={"format": "json"}, json=payload,
+        ) or {}
+
     # -- REST services (hooks) ----------------------------------------------
     def list_hooks(self, asset_uid: str) -> list[dict]:
         data = self._request(
