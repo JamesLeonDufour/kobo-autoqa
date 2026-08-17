@@ -171,15 +171,21 @@ class KoboClient:
             params={"format": "json"}, json={"params": params},
         )
 
-    def get_data_supplement(self, asset_uid: str, root_uuid: str) -> dict:
-        """Current NLP results for one submission. 404 when the uuid is unknown."""
+    def get_data_supplement(self, asset_uid: str, root_uuid: str,
+                            *, missing_ok: bool = True) -> dict:
+        """Current NLP results for one submission.
+
+        A 404 means Kobo has no submission with this root uuid. The pipeline
+        treats that as "nothing yet" (missing_ok), but callers that need to
+        tell the two apart can ask for it to raise.
+        """
         try:
             return self._request(
                 "GET", f"/api/v2/assets/{asset_uid}/data/{quote(root_uuid)}/supplement/",
                 params={"format": "json"},
             ) or {}
         except KoboError as exc:
-            if exc.status == 404:
+            if exc.status == 404 and missing_ok:
                 return {}
             raise
 

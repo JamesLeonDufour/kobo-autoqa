@@ -1123,18 +1123,35 @@ async function loadJobs() {
       <td class="small" style="color:${j.last_error ? "var(--critical)" : "var(--text-secondary)"};max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
           title="${esc(j.last_error || j.note || "")}">${esc(j.last_error || j.note || "—")}</td>
       <td class="row" style="gap:5px;border-bottom:0">
-        <button class="sm jview">View</button><button class="sm jretry">Retry</button></td>
+        <button class="sm jview">View</button><button class="sm jretry">Retry</button
+        ><button class="sm danger jdel" title="Remove this queue entry (does not touch Kobo)">Delete</button></td>
     </tr>`).join("") : `<tr><td colspan="7" class="muted">Nothing queued yet.</td></tr>`;
 
   $$("#jobRows tr[data-s]").forEach(tr => {
     const a = tr.dataset.a, s = tr.dataset.s;
-    const v = $(".jview", tr), r = $(".jretry", tr);
+    const v = $(".jview", tr), r = $(".jretry", tr), d = $(".jdel", tr);
     if (v) v.addEventListener("click", async () => {
       try {
         const res = await api(`/assets/${encodeURIComponent(a)}/submissions/${encodeURIComponent(s)}`);
-        $("#supDump").textContent = JSON.stringify(res.supplement, null, 2);
+        const empty = !res.supplement || !Object.keys(res.supplement).length;
+        $("#supDump").textContent = empty
+          ? "No NLP results yet for this submission.\n\n"
+            + "Kobo knows the submission but nothing has been transcribed,\n"
+            + "translated or analysed on it so far."
+          : JSON.stringify(res.supplement, null, 2);
         $("#supCard").classList.remove("hidden");
         $("#supCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (e) {
+        $("#supDump").textContent = e.message;
+        $("#supCard").classList.remove("hidden");
+      }
+    });
+    if (d) d.addEventListener("click", async () => {
+      if (!confirm(`Remove ${s} from the queue?\n\nThis only deletes the pipeline's `
+                 + `record of it. Nothing in KoboToolbox is changed.`)) return;
+      try {
+        await api(`/jobs/${encodeURIComponent(a)}/${encodeURIComponent(s)}`, { method: "DELETE" });
+        toast("Queue entry removed."); loadJobs();
       } catch (e) { toast(e.message, "err"); }
     });
     if (r) r.addEventListener("click", async () => {

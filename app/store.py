@@ -158,6 +158,14 @@ class Store:
         with self._conn() as c:
             return c.execute(q, args + (limit,)).fetchall()
 
+    def delete_job(self, asset_uid: str, submission_uuid: str) -> int:
+        with self._lock, self._conn() as c:
+            cur = c.execute(
+                "DELETE FROM jobs WHERE asset_uid = ? AND submission_uuid = ?",
+                (asset_uid, submission_uuid),
+            )
+            return cur.rowcount
+
     def reset(self, asset_uid: str, submission_uuid: str) -> None:
         self.advance(asset_uid, submission_uuid, STAGE_NEW, delay=0, error=None)
 

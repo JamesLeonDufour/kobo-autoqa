@@ -188,6 +188,15 @@ class Pipeline:
                      attempts + 1, note or f"-> {next_stage}")
 
         except KoboError as exc:
+            if exc.status == 404:
+                # Kobo has no submission with this uuid, so no amount of
+                # retrying will help. Park it with a note that says why.
+                self.store.advance(
+                    asset_uid, submission_uuid, STAGE_FAILED, error=str(exc)[:1000],
+                    note="no submission with this uuid on the form — stale queue entry")
+                log.error("[%s/%s] no such submission in Kobo; giving up",
+                          asset_uid, submission_uuid)
+                return
             backoff = min(600, 30 * (2 ** min(attempts, 5)))
             log.warning("[%s/%s] %s -- retrying in %ss", asset_uid, submission_uuid, exc, backoff)
             self.store.advance(asset_uid, submission_uuid, stage or STAGE_NEW,

@@ -473,6 +473,12 @@ def retry(asset_uid: str, sub_uuid: str) -> dict:
     return {"ok": True}
 
 
+@guarded.delete("/jobs/{asset_uid}/{sub_uuid}")
+def delete_job(asset_uid: str, sub_uuid: str) -> dict:
+    """Drop a queue entry. Only removes it here — Kobo is not touched."""
+    return {"ok": True, "deleted": store().delete_job(asset_uid, sub_uuid)}
+
+
 @guarded.post("/jobs/retry-failed")
 def retry_failed() -> dict:
     s = store()
@@ -485,8 +491,29 @@ def retry_failed() -> dict:
 
 @guarded.get("/assets/{asset_uid}/submissions/{sub_uuid}")
 def supplement(asset_uid: str, sub_uuid: str) -> dict:
+    """Whatever NLP results Kobo currently holds for one submission.
+
+    Which endpoint holds them depends on the server's dialect, and the older
+    one 404s on a current server -- returning an empty document rather than an
+    error, which looks like "no results" instead of "wrong endpoint".
+    """
     with _client() as c:
-        return {"supplement": _kobo_guard(c.get_supplement, asset_uid, sub_uuid)}
+        try:
+            c.list_advanced_features(asset_uid)
+        except KoboError:
+            return {"supplement": _kobo_guard(c.get_supplement, asset_uid, sub_uuid),
+                    "api": "advanced_submission_post"}
+        try:
+            data = c.get_data_supplement(asset_uid, sub_uuid, missing_ok=False)
+        except KoboError as exc:
+            if exc.status == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"KoboToolbox has no submission with uuid {sub_uuid} on "
+                           f"this form. The queue entry is stale — delete it.",
+                ) from exc
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"supplement": data, "api": "supplement"}
 
 
 @guarded.post("/assets/{asset_uid}/backfill")
