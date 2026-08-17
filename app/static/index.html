@@ -208,13 +208,25 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
 <div id="login" class="hidden">
   <div class="card">
     <h1 style="margin-bottom:4px">Kobo AutoQA pipeline</h1>
-    <p class="muted small" style="margin-top:0">Sign in to configure and monitor the pipeline.</p>
+    <p class="muted small" style="margin-top:0" id="loginIntro">Sign in to configure and monitor the pipeline.</p>
     <form id="loginForm">
-      <label class="field"><span>Admin password</span>
+      <label class="field" id="nameField" style="display:none"><span>Your name</span>
+        <input type="text" id="loginName" autocomplete="name"></label>
+      <label class="field"><span>Email</span>
+        <input type="text" id="loginEmail" autocomplete="username" inputmode="email"></label>
+      <label class="field"><span>Password</span>
         <input type="password" id="pw" autocomplete="current-password" required></label>
-      <button class="primary" type="submit" style="width:100%">Sign in</button>
+      <button class="primary" type="submit" style="width:100%" id="loginSubmit">Sign in</button>
     </form>
-    <p id="loginErr" class="small hidden" style="color:var(--critical);margin-bottom:0"></p>
+    <p id="loginErr" class="small hidden" style="color:var(--critical);margin:10px 0 0"></p>
+    <p id="loginOk" class="small hidden" style="color:var(--good);margin:10px 0 0"></p>
+    <p class="small muted" style="margin:12px 0 0">
+      <a href="#" id="toggleMode">Create an account</a>
+      <span id="firstHint" class="hidden"> — the first account becomes the administrator.</span>
+    </p>
+    <p class="small muted" style="margin:8px 0 0" id="envHint">
+      Leave the email blank to sign in with the <code>ADMIN_PASSWORD</code> from <code>.env</code>.
+    </p>
   </div>
 </div>
 
@@ -228,10 +240,12 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
     <button class="tab" role="tab" data-tab="setup"      aria-selected="false">Setup</button>
     <button class="tab" role="tab" data-tab="monitor"    aria-selected="false">Monitor</button>
     <button class="tab" role="tab" data-tab="connection" aria-selected="false">Connection</button>
+    <button class="tab hidden" role="tab" data-tab="users" aria-selected="false" id="usersTab">Users</button>
   </nav>
   <span class="spacer"></span>
   <span id="dryBadge" class="badge hidden"><span class="dot"></span>Dry run</span>
   <button class="sm" id="themeBtn" title="Switch between auto, light and dark">Theme: auto</button>
+  <span id="whoami" class="small muted"></span>
   <button class="sm" id="logoutBtn">Sign out</button>
 </header>
 
@@ -403,6 +417,40 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
   </section>
 
   <!-- ---------------- MONITOR ---------------- -->
+  <!-- ---------------- USERS ---------------- -->
+  <section id="tab-users" class="hidden">
+    <div class="card">
+      <header><h1 style="margin:0">Accounts</h1>
+        <span class="spacer" style="flex:1"></span>
+        <span id="pendingCount" class="badge st-idle"><span class="dot"></span>—</span>
+      </header>
+      <p class="muted small" style="margin-top:0">
+        Anyone can request an account, but it stays pending until approved here.
+        Each account has its own KoboToolbox connection, forms and queue — approving
+        one lets it start billable transcription and analysis work.
+      </p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Role</th>
+            <th>Last sign-in</th><th></th></tr></thead>
+          <tbody id="userRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <header><h2 style="margin:0">Your password</h2></header>
+      <form id="pwForm" class="grid2">
+        <label class="field"><span>Current password</span>
+          <input type="password" id="pwCurrent" autocomplete="current-password"></label>
+        <label class="field"><span>New password (at least 12 characters)</span>
+          <input type="password" id="pwNew" autocomplete="new-password"></label>
+      </form>
+      <button id="pwSave">Change password</button>
+      <span class="small muted" style="margin-left:8px">Changing it signs out every session, including this one.</span>
+    </div>
+  </section>
+
   <!-- ---------------- CONNECTION ---------------- -->
   <section id="tab-connection" class="hidden">
     <div class="card">
@@ -519,6 +567,8 @@ let ENV = {}, ASSETS = [], CUR = null, QUAL = [], TIMER = null;
 // Which audio question the Setup tab is editing (current API only, where a
 // configuration belongs to exactly one recording).
 let ACTIVE_XPATH = null;
+// The signed-in account, used to hide destructive actions on your own row.
+let ME = null;
 
 /* ------------------------------ helpers ------------------------------ */
 function toast(msg, kind="") {
@@ -567,17 +617,118 @@ const stageBadge = s => {
 function showLogin() { $("#login").classList.remove("hidden"); $("#app").classList.add("hidden"); }
 function showApp()   { $("#login").classList.add("hidden");   $("#app").classList.remove("hidden"); }
 
+let SIGNUP_MODE = false;
+
+$("#toggleMode").addEventListener("click", async e => {
+  e.preventDefault();
+  SIGNUP_MODE = !SIGNUP_MODE;
+  let first = false;
+  try { first = (await api("/session")).first_account_is_admin; } catch {}
+  $("#loginSubmit").textContent = SIGNUP_MODE ? "Create account" : "Sign in";
+  $("#toggleMode").textContent  = SIGNUP_MODE ? "Back to sign in" : "Create an account";
+  $("#nameField").style.display = SIGNUP_MODE ? "block" : "none";
+  $("#loginIntro").textContent  = SIGNUP_MODE
+    ? "Create an account to configure and monitor your own forms."
+    : "Sign in to configure and monitor the pipeline.";
+  $("#firstHint").classList.toggle("hidden", !(SIGNUP_MODE && first));
+  $("#envHint").classList.toggle("hidden", SIGNUP_MODE);
+  $("#pw").setAttribute("autocomplete", SIGNUP_MODE ? "new-password" : "current-password");
+  $("#loginErr").classList.add("hidden");
+  $("#loginOk").classList.add("hidden");
+});
+
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
+  const body = { email: $("#loginEmail").value.trim(), password: $("#pw").value };
+  $("#loginErr").classList.add("hidden");
+  $("#loginOk").classList.add("hidden");
   try {
-    await api("/login", { method: "POST", body: JSON.stringify({ password: $("#pw").value }) });
-    $("#loginErr").classList.add("hidden");
-    $("#pw").value = "";
+    if (SIGNUP_MODE) {
+      const r = await api("/register", { method: "POST",
+        body: JSON.stringify({ ...body, name: $("#loginName").value.trim() }) });
+      $("#pw").value = "";
+      if (!r.signed_in) {
+        // Pending approval: there is nothing to show yet, so say so here.
+        $("#loginOk").textContent = r.message;
+        $("#loginOk").classList.remove("hidden");
+        return;
+      }
+    } else {
+      await api("/login", { method: "POST", body: JSON.stringify(body) });
+      $("#pw").value = "";
+    }
     await boot();
   } catch (err) {
     $("#loginErr").textContent = err.message;
     $("#loginErr").classList.remove("hidden");
   }
+});
+
+/* ------------------------------ accounts ------------------------------ */
+async function loadUsers() {
+  let data;
+  try { data = await api("/users"); }
+  catch (e) {
+    $("#userRows").innerHTML = `<tr><td colspan="6" style="color:var(--critical)">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  const rows = data.results;
+  const pending = rows.filter(u => u.status === "pending").length;
+  $("#pendingCount").className = "badge " + (pending ? "st-warning" : "st-good");
+  $("#pendingCount").innerHTML = `<span class="dot"></span>${
+    pending ? `${pending} awaiting approval` : "none awaiting approval"}`;
+
+  $("#userRows").innerHTML = rows.map(u => {
+    const badge = { active: "st-good", pending: "st-warning", disabled: "st-idle" }[u.status];
+    const self = ME && ME.id === u.id;
+    return `<tr data-id="${u.id}">
+      <td>${esc(u.email)}${self ? ` <span class="small muted">(you)</span>` : ""}</td>
+      <td class="small">${esc(u.name || "—")}</td>
+      <td><span class="badge ${badge}"><span class="dot"></span>${u.status}</span></td>
+      <td class="small">${u.is_admin ? "administrator" : "member"}</td>
+      <td class="small muted">${u.last_login_at ? ago(u.last_login_at) : "never"}</td>
+      <td class="row" style="gap:5px;border-bottom:0">
+        ${u.status === "pending" ? `<button class="sm primary uact" data-do="active">Approve</button>` : ""}
+        ${u.status === "active" && !self ? `<button class="sm uact" data-do="disabled">Disable</button>` : ""}
+        ${u.status === "disabled" ? `<button class="sm uact" data-do="active">Re-enable</button>` : ""}
+        ${self ? "" : `<button class="sm uadmin" data-admin="${u.is_admin ? "0" : "1"}">${
+            u.is_admin ? "Remove admin" : "Make admin"}</button>`}
+        ${self ? "" : `<button class="sm danger udel">Delete</button>`}
+      </td></tr>`;
+  }).join("");
+
+  $$("#userRows tr[data-id]").forEach(tr => {
+    const id = tr.dataset.id;
+    const act = $(".uact", tr), adm = $(".uadmin", tr), del = $(".udel", tr);
+    if (act) act.addEventListener("click", async () => {
+      try { await api(`/users/${id}/status`, { method: "POST",
+              body: JSON.stringify({ status: act.dataset.do }) });
+            toast("Account updated.", "ok"); loadUsers(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    if (adm) adm.addEventListener("click", async () => {
+      try { await api(`/users/${id}/admin`, { method: "POST",
+              body: JSON.stringify({ is_admin: adm.dataset.admin === "1" }) });
+            toast("Account updated.", "ok"); loadUsers(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    if (del) del.addEventListener("click", async () => {
+      if (!confirm("Delete this account?\n\nTheir saved credentials, form settings "
+                 + "and queue are deleted too. Nothing in KoboToolbox is changed.")) return;
+      try { await api(`/users/${id}`, { method: "DELETE" });
+            toast("Account deleted.", "ok"); loadUsers(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+  });
+}
+
+$("#pwSave").addEventListener("click", async () => {
+  try {
+    await api("/me/password", { method: "POST", body: JSON.stringify({
+      current: $("#pwCurrent").value, new: $("#pwNew").value }) });
+    toast("Password changed — signing you out.", "ok");
+    setTimeout(() => { showLogin(); }, 1200);
+  } catch (e) { toast(e.message, "err"); }
 });
 $("#logoutBtn").addEventListener("click", async () => {
   await api("/logout", { method: "POST" }).catch(() => {});
@@ -604,9 +755,10 @@ try {
 $$(".tab").forEach(t => t.addEventListener("click", () => selectTab(t.dataset.tab)));
 function selectTab(name) {
   $$(".tab").forEach(t => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
-  ["forms","setup","monitor","connection"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+  ["forms","setup","monitor","connection","users"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
   if (name === "monitor") loadJobs();
   if (name === "connection") loadCredentials();
+  if (name === "users") loadUsers();
 }
 
 /* ---------------------------- connection ---------------------------- */
@@ -1181,12 +1333,13 @@ function setupTimer() {
 async function boot() {
   try { ENV = await api("/env"); }
   catch { showLogin(); return; }
+  ME = ENV.user || null;
   showApp();
+  $("#usersTab").classList.toggle("hidden", !(ME && ME.is_admin));
+  $("#whoami").textContent = ME ? (ME.email || "") : "";
   $("#dryBadge").classList.toggle("hidden", !ENV.dry_run);
   if (ENV.dry_run) $("#dryBadge").className = "badge st-warning";
 
-  // No token anywhere yet: send the operator straight to the Connection tab
-  // instead of showing an empty, broken-looking form list.
   if (!ENV.token_set) {
     $("#connBadge").className = "badge st-warning";
     $("#connBadge").innerHTML = `<span class="dot"></span>No credentials`;

@@ -65,7 +65,8 @@ async def main():
         fails += not ok("audio questions found",
                         d["media_questions"] == ["section_a/Recording_001", "ambient"], d["media_questions"])
         fails += not ok("dialect detected", d["detected_dialect"] == "legacy", d["detected_dialect"])
-        fails += not ok("expected endpoint built", d["expected_endpoint"].endswith(f"/kobo/hook/{U}"))
+        fails += not ok("expected endpoint built", d["expected_endpoint"].endswith(f"/kobo/hook/0/{U}"),
+                        d["expected_endpoint"])
 
         print("\n[qual survey]")
         body = {"qual_survey": json.loads(json.dumps(SURVEY)),
@@ -154,9 +155,18 @@ async def main():
         fails += not ok("secret hint is masked",
                         cr["kobo_token"]["hint"] == "ui-••••••456", cr["kobo_token"]["hint"])
 
-        # the running app must now actually use the value entered in the UI
-        from app.config import settings as live  # noqa: PLC0415
-        fails += not ok("live settings picked up new token", live.kobo_token == "ui-token-123456")
+        # Credentials are resolved per account rather than mutated onto the
+        # process-wide settings, so check the resolution the app actually uses.
+        from app import runtime  # noqa: PLC0415
+        from app.common import make_store  # noqa: PLC0415
+        from app.config import settings as base  # noqa: PLC0415
+
+        class live:  # noqa: N801 - keeps the assertions below readable
+            pass
+        def _resolved():
+            return runtime.for_owner(make_store(base), 0)
+        fails += not ok("saved token is what the app resolves",
+                        _resolved().kobo_token == "ui-token-123456")
         r = await c.post(f"/kobo/hook/{U}", json={"_uuid": "sub-ui"},
                          headers={"X-Pipeline-Secret": "ui-secret"})
         fails += not ok("webhook honours the UI secret", r.status_code == 200, r.text)
@@ -167,14 +177,16 @@ async def main():
         # blank string clears an override rather than blanking the .env value
         r = await c.put("/admin/api/credentials", json={"kobo_token": ""})
         fails += not ok("blank field falls back to env",
-                        r.json()["credentials"]["kobo_token"]["source"] == "env" and live.kobo_token == "x",
-                        live.kobo_token)
+                        r.json()["credentials"]["kobo_token"]["source"] == "env"
+                        and _resolved().kobo_token == "x",
+                        _resolved().kobo_token)
 
         r = await c.delete("/admin/api/credentials")
         cr = r.json()["credentials"]
         fails += not ok("revert restores every env value",
                         all(v.get("source") != "ui" for v in cr.values() if isinstance(v, dict))
-                        and live.webhook_secret == "s3cret", live.webhook_secret)
+                        and _resolved().webhook_secret == "s3cret",
+                        _resolved().webhook_secret)
 
         print("\n[logout]")
         await c.post("/admin/api/logout")

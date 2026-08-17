@@ -20,6 +20,7 @@ fresh deployment would have no way to authenticate the first login.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from .config import Settings, settings
 from .store import Store
@@ -63,9 +64,65 @@ def _coerce(field: str, value: object) -> object:
     return text
 
 
-def stored(store: Store) -> dict:
+def key_for(owner: int | None) -> str:
+    """Each account keeps its own connection; owner None is the legacy row."""
+    return KEY if owner is None else f"{KEY}:{owner}"
+
+
+def stored(store: Store, owner: int | None = None) -> dict:
     """The raw overrides currently saved in the database."""
-    return {k: v for k, v in (store.get_app_settings(KEY) or {}).items() if k in FIELDS}
+    return {k: v for k, v in (store.get_app_settings(key_for(owner)) or {}).items()
+            if k in FIELDS}
+
+
+def for_owner(store: Store, owner: int, base: Settings = settings) -> Settings:
+    """A Settings copy carrying one user's Kobo connection.
+
+    Returns a copy rather than mutating the process-wide settings, because
+    several users' jobs are handled in the same process and must not see each
+    other's credentials.
+    """
+    resolved = replace(base)
+    saved = stored(store, owner)
+    for field in FIELDS:
+        value = saved.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            value = _ENV_BASELINE[field]
+        setattr(resolved, field, value)
+    return resolved
+
+
+def save_for_owner(store: Store, owner: int, patch: dict) -> dict:
+    current = stored(store, owner)
+    for field, value in patch.items():
+        if field not in FIELDS:
+            continue
+        coerced = _coerce(field, value)
+        if isinstance(coerced, str) and not coerced:
+            current.pop(field, None)
+        else:
+            current[field] = coerced
+    store.set_app_settings(key_for(owner), current)
+    return current
+
+
+def clear_for_owner(store: Store, owner: int) -> None:
+    store.delete_app_settings(key_for(owner))
+
+
+def describe_for_owner(store: Store, owner: int, resolved: Settings) -> dict:
+    saved = stored(store, owner)
+    out: dict[str, object] = {}
+    for field in FIELDS:
+        effective = getattr(resolved, field)
+        source = "ui" if field in saved else ("env" if _ENV_BASELINE[field] else "default")
+        if field in SECRET_FIELDS:
+            out[field] = {"set": bool(effective), "hint": _hint(str(effective)),
+                          "source": source}
+        else:
+            out[field] = {"value": effective, "source": source}
+    out["admin_password_from_env"] = True
+    return out
 
 
 def apply(store: Store, s: Settings = settings, *, force: bool = False) -> bool:

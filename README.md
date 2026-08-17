@@ -88,7 +88,8 @@ is done in the browser:
 
 | Tab | What it does |
 |---|---|
-| **Connection** | Kobo server URL, API token, TLS verification, and the webhook URL + shared secret. Test the credentials before saving. |
+| **Connection** | Kobo server URL, API token, TLS verification, and the webhook URL + shared secret. Test the credentials before saving. Yours alone. |
+| **Users** | administrators only: approve pending sign-ups, disable or delete accounts, grant admin |
 | **Forms** | lists every survey on the server, with its submission count and whether the pipeline is set up on it |
 | **Setup** | a 7-step wizard for the selected form — see below |
 | **Monitor** | live queue tiles, per-submission stage, error detail, retry, and the raw `_supplementalDetails` Kobo currently holds |
@@ -132,6 +133,53 @@ in `.env` is optional and simply adds to that list.
 signed cookies keyed on the password itself, so changing the password logs
 everyone out. Set `ADMIN_COOKIE_SECURE=false` only if you browse over plain
 HTTP.
+
+## Accounts
+
+The pipeline can serve several people, each with their own KoboToolbox
+connection, forms, queue and results. Nothing is shared between accounts.
+
+**Signing up is open; being let in is not.** Anyone who can reach the app can
+request an account, but it stays `pending` until an administrator approves it
+on the **Users** tab. That gate matters because an active account can start
+billable transcription and analysis work on the AWS credentials behind its
+Kobo server.
+
+The **first account created becomes an active administrator** — someone has to
+be able to approve the second. It also adopts anything configured before
+accounts existed, so upgrading an existing deployment keeps its forms, queue
+and saved credentials.
+
+`ADMIN_PASSWORD` still works as a break-glass login: leave the email blank on
+the sign-in form. It resolves to the first administrator account when one
+exists, so its actions are attributed to a real owner. Keep it for recovery,
+and use a real account day to day.
+
+| Action | Who |
+|---|---|
+| Approve, disable, delete accounts | administrators |
+| Grant or remove administrator | administrators (never the last one, never yourself) |
+| Everything else | the account that owns the form |
+
+Passwords are hashed with scrypt from the standard library — no new
+dependency. Session cookies are signed and keyed on the password hash, so
+changing a password ends that account's other sessions immediately.
+
+### What "their own" means
+
+| Scoped per account | Shared |
+|---|---|
+| Kobo server URL and API token | the deployment's `.env` (ports, intervals, log level) |
+| Which forms are managed, and their settings | the worker process itself |
+| Analysis questions written to Kobo | |
+| The job queue, its history and notes | |
+| Webhook secret and public URL | |
+
+Webhooks are registered per account at
+`/kobo/hook/<account-id>/<asset-uid>`, so the receiver knows whose credentials
+to use. The older `/kobo/hook/<asset-uid>` URL still works and is attributed to
+whichever account watches that form; if more than one does, it answers 409 and
+asks you to re-register.
 
 ### Where credentials live
 
@@ -413,6 +461,7 @@ pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
 python tests/test_admin_flow.py                # 40 assertions, all should PASS
 python tests/test_supplement_flow.py           # 35 assertions, current NLP API
+python tests/test_accounts.py                  # 24 assertions, accounts + isolation
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \

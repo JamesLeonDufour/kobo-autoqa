@@ -7,8 +7,9 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from . import runtime
-from .common import make_client, make_store, setup_logging, submission_uuid
+from .common import make_store, setup_logging, submission_uuid
 from .config import settings
+from .kobo import KoboClient
 from .pipeline import Pipeline
 
 log = logging.getLogger(__name__)
@@ -51,72 +52,104 @@ def poll_asset(client, store, asset_uid: str, lookback_minutes: int) -> int:
     return added
 
 
+class Tenants:
+    """Per-account Kobo clients, built on demand and reused between passes.
+
+    Each account has its own server and token, so a job can only be handled
+    with its owner's credentials. Clients are rebuilt when that account's
+    connection changes.
+    """
+
+    def __init__(self, store) -> None:
+        self._store = store
+        self._cache: dict[int, tuple[float, object, Pipeline]] = {}
+        self._quiet: set[int] = set()
+
+    def pipeline(self, owner: int) -> Pipeline | None:
+        stamp = self._store.app_settings_updated_at(runtime.key_for(owner))
+        cached = self._cache.get(owner)
+        if cached and cached[0] == stamp:
+            return cached[2]
+        if cached:
+            cached[1].close()
+
+        s = runtime.for_owner(self._store, owner)
+        try:
+            s.validate()
+        except RuntimeError as exc:
+            if owner not in self._quiet:
+                log.warning("Account %s has no usable credentials yet (%s)", owner, exc)
+                self._quiet.add(owner)
+            self._cache.pop(owner, None)
+            return None
+        self._quiet.discard(owner)
+
+        client = KoboClient(s.kobo_url, s.kobo_token, verify=s.verify_tls,
+                            timeout=s.http_timeout)
+        owned = self._store.for_owner(owner)
+        pipe = Pipeline(s, client, owned)
+        self._cache[owner] = (stamp, client, pipe)
+        log.info("Account %s connected to %s", owner, s.kobo_url)
+        return pipe
+
+    def settings_for(self, owner: int) -> object:
+        return runtime.for_owner(self._store, owner)
+
+    def close(self) -> None:
+        for _stamp, client, _pipe in self._cache.values():
+            client.close()
+        self._cache.clear()
+
+
 def main() -> None:
     setup_logging(settings.log_level)
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
     store = make_store(settings)
-    runtime.apply(store, settings, force=True)
-
-    client = None
-    pipeline = None
+    tenants = Tenants(store)
     last_poll = 0.0
-    complained = False
 
-    log.info("Worker up. Waiting for usable Kobo credentials if none are set yet.")
+    log.info("Worker up. Serving every active account; idling until any has credentials.")
 
     while _running:
-        # 0. Credentials may arrive (or change) at any time via the admin UI,
-        #    which writes to the shared database. Rebuild the client when they
-        #    do, and idle politely until there is something to connect with.
-        if runtime.apply(store, settings) or client is None:
-            if client is not None:
-                client.close()
-                client = None
-            try:
-                client = make_client(settings, store)
-            except RuntimeError as exc:
-                if not complained:
-                    log.warning("%s Idling until credentials are available.", exc)
-                    complained = True
-                time.sleep(settings.worker_tick_seconds)
-                continue
-            complained = False
-            pipeline = Pipeline(settings, client, store)
-            log.info(
-                "Connected. server=%s assets=%s transcript=%s translations=%s qual=%s dry_run=%s",
-                settings.kobo_url, settings.asset_uids or "(webhook only)",
-                settings.transcript_language, settings.translation_languages,
-                settings.enable_qual, settings.dry_run,
-            )
-            last_poll = 0.0
-
-        # 1. Polling catch-up. Assets enabled in the admin UI are merged with
-        #    whatever ASSET_UIDS lists, so either configuration path works.
-        watched = sorted(set(settings.asset_uids) | set(store.watched_assets()))
-        if watched and (time.time() - last_poll) >= settings.poll_interval_seconds:
-            for uid in watched:
-                try:
-                    poll_asset(client, store, uid, settings.poll_lookback_minutes)
-                except Exception:  # noqa: BLE001
-                    log.exception("Poll failed for %s", uid)
+        # 1. Polling catch-up, per account.
+        if (time.time() - last_poll) >= settings.poll_interval_seconds:
+            # owner 0 holds anything configured before accounts existed.
+            for owner in [0, *store.active_user_ids()]:
+                pipe = tenants.pipeline(owner)
+                if pipe is None:
+                    continue
+                s = tenants.settings_for(owner)
+                owned = store.for_owner(owner)
+                watched = sorted(set(s.asset_uids) | set(owned.watched_assets()))
+                for uid in watched:
+                    try:
+                        poll_asset(pipe.client, owned, uid, s.poll_lookback_minutes)
+                    except Exception:  # noqa: BLE001
+                        log.exception("Poll failed for %s (account %s)", uid, owner)
             last_poll = time.time()
 
-        # 2. Drain ready jobs
+        # 2. Drain ready jobs, routing each to its owner's pipeline.
         jobs = store.claim_ready(limit=25)
         for job in jobs:
             if not _running:
                 break
-            pipeline.process(
-                job["asset_uid"], job["submission_uuid"], job["stage"], job["attempts"]
-            )
+            owner = job["owner_id"] if "owner_id" in job.keys() else 0
+            pipe = tenants.pipeline(owner)
+            if pipe is None:
+                # No credentials for that account; try again next pass.
+                store.for_owner(owner).advance(
+                    job["asset_uid"], job["submission_uuid"], job["stage"], delay=300,
+                    note="waiting for this account's Kobo credentials")
+                continue
+            pipe.process(job["asset_uid"], job["submission_uuid"],
+                         job["stage"], job["attempts"])
 
         if not jobs:
             time.sleep(settings.worker_tick_seconds)
 
-    if client is not None:
-        client.close()
+    tenants.close()
     log.info("Worker stopped. Final job counts: %s", store.stats())
 
 
