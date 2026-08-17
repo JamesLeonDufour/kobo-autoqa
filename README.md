@@ -52,8 +52,10 @@ duplicate webhooks, restarts, and overlapping polls cost nothing.
 ## Stack
 
 - Python 3.12, `httpx`, `FastAPI`, `uvicorn`
-- SQLite (WAL) for the job queue and poll cursors — no external DB
-- Docker Compose, bound to `127.0.0.1:8077` for Nginx Proxy Manager to front
+- SQLite (WAL) for the job queue, poll cursors, per-form settings, and
+  UI-entered credentials — no external DB
+- Docker Compose. The API is published to Nginx Proxy Manager over a shared
+  Docker network, plus `127.0.0.1:8077` for local debugging
 
 ---
 
@@ -158,6 +160,10 @@ $EDITOR .env                 # KOBO_URL, KOBO_TOKEN, ASSET_UIDS, languages
 docker compose build
 ```
 
+The CLI reads the same effective settings as the rest of the pipeline, so if
+you have already saved credentials on the Connection tab you can leave
+`KOBO_URL` and `KOBO_TOKEN` out of `.env` and the commands below still work.
+
 ### Step 1 — confirm what your server accepts
 
 The subsequences API changed payload shape between kpi releases. Ask your
@@ -214,8 +220,17 @@ docker compose run --rm worker python -m app.cli list-hooks    aBcDeFgHiJkLmNoPq
 
 This creates a Kobo REST Service pointing at
 `https://autoqa.bareit.be/kobo/hook/<asset_uid>` with your
-`X-Pipeline-Secret` header attached. Requests without the right secret get a
-403; requests for an asset not in `ASSET_UIDS` get a 404.
+`X-Pipeline-Secret` header attached.
+
+How the receiver decides what to accept:
+
+- Wrong or missing secret → **403**. If `WEBHOOK_SECRET` is empty the check is
+  skipped entirely, so anyone who knows the URL can enqueue work — set it.
+- Asset not enabled in the UI and not in `ASSET_UIDS` → **404**. If *both*
+  lists are empty the pipeline accepts any asset the hook delivers, which is
+  convenient for a first test and too permissive for a public deployment.
+- A payload with no usable submission uuid → **200** with `"status":"ignored"`,
+  on purpose: retrying a malformed payload would never help.
 
 The poller keeps running regardless, so a webhook outage means late results,
 never lost ones.
@@ -292,7 +307,33 @@ first run against a production form.
 
 ---
 
+## When something looks wrong
+
+The Monitor tab is the first place to look: it shows a tile per stage, and each
+row carries the submission's stage, attempt count, and last error. "View" prints
+the raw `_supplementalDetails` Kobo currently holds for that submission, which
+is the ground truth for whether the NLP actually ran.
+
+| Symptom | Most likely cause |
+|---|---|
+| Badge reads **Kobo unreachable** | Wrong server URL or a rejected token. Use **Test connection** on the Connection tab — it reports the difference between "cannot reach the host" and "token rejected". |
+| Forms tab is empty | The token belongs to a user with no surveys, or lacks `view_submissions` on them. |
+| Jobs sit in **Queued** forever | The worker is not running or has no credentials. Check `docker compose logs -f worker`. |
+| Jobs cycle in **Transcribing** and never finish | Kobo accepted the request but its NLP is not completing — AutoQA may not be enabled server-side, or the audio language is not ASR-supported. Check the supplement with "View". |
+| Everything lands in **Failed** with a 400 | Almost always the payload dialect. Run `introspect` against the server and pin `SCHEMA_DIALECT`; see [Known version sensitivity](#known-version-sensitivity). |
+| Webhook shows failures in Kobo | Secret mismatch (403) or the form is not enabled here (404). Re-register the hook from the Setup tab after any secret change. |
+| NPM returns **502** | The `api` container is down, or it is not on the `nginxproxy_default` network — confirm with `docker exec nginxproxy-app-1 curl -s -o /dev/null -w '%{http_code}' http://kobo-autoqa-api:8000/healthz`. |
+
+A job parked in `failed` is not lost. **Retry all failed** on the Monitor tab
+resets them to `new` and the worker picks them straight back up.
+
+---
+
 ## Tuning
+
+The first three are **defaults**. The Setup wizard saves them per form, and a
+form's own values win — so one form can be `fr-FR → en` while another is
+`ar → en,fr`. The scheduling variables below are process-wide.
 
 | Variable | Effect |
 |---|---|
@@ -326,8 +367,12 @@ uvicorn app.webhook:app --port 8000            # then open /admin/
 ## Cost warning
 
 Every submission triggers billable Transcribe minutes, Translate characters,
-and Bedrock tokens on **your** AWS account. On a busy form this adds up fast.
-Start with `DRY_RUN=true`, then a single form, then widen `ASSET_UIDS`.
+and Bedrock tokens on **your** AWS account. On a busy form this adds up fast,
+and a backfill over months of history bills all of it at once.
+
+Start with `DRY_RUN=true` to watch the payloads without sending them, then
+enable a single form, then widen. The **Pipeline enabled** switch at the top of
+the Setup tab pauses a form without losing its configuration.
 
 ---
 
