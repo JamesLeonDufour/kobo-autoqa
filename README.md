@@ -327,6 +327,24 @@ is the ground truth for whether the NLP actually ran.
 A job parked in `failed` is not lost. **Retry all failed** on the Monitor tab
 resets them to `new` and the worker picks them straight back up.
 
+### "Passes" is not a retry count
+
+The number on the Monitor tab counts how many times the worker has looked at a
+submission, and a healthy run uses several. The worker never blocks on Kobo's
+async NLP: each pass either issues one request or checks whether an earlier one
+finished, then reschedules itself. On the current API a single submission with
+one recording, three translations and four analysis questions takes roughly:
+
+```
+1  request transcription        5  accept each translation
+2  poll, accept the transcript  6  request each analysis question
+3  request the translations     7  poll for the answers
+4  poll                         8  done
+```
+
+So 6–10 passes is the normal shape of success. Retries after an *error* are
+visible in the Detail column, and only those are worth investigating.
+
 ---
 
 ## Tuning
@@ -434,13 +452,35 @@ sequence per question is really: request transcription → wait → **accept it*
 question. The pipeline does all of that unattended; the acceptance steps are
 the ones that are easy to miss when reading the schema alone.
 
-On this dialect the **server owns the configuration**. The pipeline reads
-`/advanced-features/` to learn which questions to transcribe, which languages
-to translate into, and which analysis questions to run, rather than imposing
-its own. That matters most for the analysis questions, whose uuids have to
-match the ones the server already holds. If a form has *no* advanced-features
-rows at all, the pipeline creates the transcription and translation rows from
-that form's settings; it never invents analysis questions.
+### Configuration is per audio question
+
+On this dialect a configuration row is keyed on `(question_xpath, action)`, so
+**analysis questions belong to one recording, not to the form**. A form with
+two audio questions needs two sets of rows, and the Setup tab reflects that:
+you pick one recording, configure it, apply, then pick the next.
+
+Four actions matter:
+
+| Action | Holds |
+|---|---|
+| `automatic_google_transcription` | `[{"language": "en"}]` |
+| `automatic_google_translation` | one entry per target language |
+| `manual_qual` | the analysis **question definitions** — uuid, type, labels, hint, choices |
+| `automatic_bedrock_qual` | which of those question uuids the AI should answer |
+
+Note the split in the last two: `manual_qual` defines the questions,
+`automatic_bedrock_qual` selects which get answered automatically. Questions of
+type `qualNote` are headings for human coders, so the pipeline defines them but
+never asks the model to answer one.
+
+Questions and individual choices can carry a **hint**, which is extra guidance
+passed to the model (`{"hint": {"labels": {"_default": "1 is lowest, 5 is best"}}}`).
+The Setup tab exposes it as a second field under each question.
+
+The pipeline reads all of this from the server rather than imposing its own,
+because the analysis question uuids have to match what the server holds. If a
+form has *no* rows at all, it creates the transcription and translation rows
+from that form's settings; it never invents analysis questions.
 
 ---
 

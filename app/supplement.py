@@ -30,6 +30,14 @@ VERSION = "20250820"
 ACTION_TRANSCRIBE = "automatic_google_transcription"
 ACTION_TRANSLATE = "automatic_google_translation"
 ACTION_QUAL = "automatic_bedrock_qual"
+# Holds the analysis *question definitions*. automatic_bedrock_qual then lists
+# which of those questions the server should answer with AI.
+ACTION_QUAL_DEFS = "manual_qual"
+
+CHOICE_TYPES = {"qualSelectOne", "qualSelectMultiple"}
+QUAL_TYPES = CHOICE_TYPES | {
+    "qualText", "qualInteger", "qualTags", "qualNote", "qualAutoKeywordCount",
+}
 
 STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETE = "complete"
@@ -48,6 +56,55 @@ def split_language(code: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # what the server has configured for this asset
 # ---------------------------------------------------------------------------
+def _labels(value: Any) -> dict:
+    """Accept a plain string or an existing {"_default": ...} label object."""
+    if isinstance(value, dict):
+        return {k: v for k, v in value.items() if isinstance(v, str)} or {"_default": ""}
+    return {"_default": str(value or "")}
+
+
+def qual_definition(question: dict) -> dict:
+    """Normalise one analysis question into the shape the server stores.
+
+    Only the keys the schema allows are emitted -- it rejects anything else
+    (`additionalProperties: false`), so stray UI fields have to be dropped.
+    """
+    qtype = question.get("type")
+    if qtype not in QUAL_TYPES:
+        raise ValueError(f"unsupported analysis question type: {qtype!r}")
+
+    out: dict[str, Any] = {
+        "uuid": question["uuid"],
+        "type": qtype,
+        "labels": _labels(question.get("labels") or question.get("label")),
+    }
+    hint = question.get("hint")
+    hint_text = hint.get("labels") if isinstance(hint, dict) and "labels" in hint else hint
+    if hint_text:
+        out["hint"] = {"labels": _labels(hint_text)}
+    if qtype in CHOICE_TYPES:
+        out["choices"] = [
+            {"uuid": c["uuid"], "labels": _labels(c.get("labels") or c.get("label"))}
+            for c in question.get("choices") or []
+            if c.get("uuid")
+        ]
+    return out
+
+
+def qual_definitions(questions: list[dict]) -> list[dict]:
+    return [qual_definition(q) for q in questions if q.get("uuid")]
+
+
+def auto_qual_params(questions: list[dict]) -> list[dict]:
+    """Which questions the AI should answer: everything except notes.
+
+    A qualNote is a heading shown to human coders, so asking Bedrock to answer
+    one is meaningless.
+    """
+    return [{"uuid": q["uuid"]} for q in questions
+            if q.get("uuid") and q.get("type") != "qualNote"]
+
+
 class AssetFeatures:
     """The asset's advanced-features rows, grouped for the pipeline's use.
 
@@ -57,9 +114,11 @@ class AssetFeatures:
     """
 
     def __init__(self, rows: list[dict] | None = None) -> None:
+        self.rows: list[dict] = list(rows or [])
         self.transcribe: dict[str, str] = {}          # xpath -> language
         self.translate: dict[str, list[str]] = {}     # xpath -> [language]
         self.qual: dict[str, list[str]] = {}          # xpath -> [question uuid]
+        self.definitions: dict[str, list[dict]] = {}  # xpath -> [question def]
         for row in rows or []:
             xpath = row.get("question_xpath")
             action = row.get("action")
@@ -78,10 +137,20 @@ class AssetFeatures:
                 self.qual.setdefault(xpath, []).extend(
                     p["uuid"] for p in params if p.get("uuid")
                 )
+            elif action == ACTION_QUAL_DEFS:
+                self.definitions.setdefault(xpath, []).extend(
+                    p for p in params if p.get("uuid")
+                )
 
     @property
     def xpaths(self) -> list[str]:
         return sorted(set(self.transcribe) | set(self.translate) | set(self.qual))
+
+    def row_uid(self, xpath: str, action: str) -> str | None:
+        for row in self.rows:
+            if row.get("question_xpath") == xpath and row.get("action") == action:
+                return row.get("uid")
+        return None
 
     def __bool__(self) -> bool:
         return bool(self.transcribe or self.translate or self.qual)
@@ -191,6 +260,51 @@ def translate_body(xpath: str, language_code: str) -> dict:
 def qual_body(xpath: str, question_uuid: str) -> dict:
     """One PATCH per question -- the schema takes a single uuid, not a list."""
     return _envelope(xpath, ACTION_QUAL, {"uuid": question_uuid})
+
+
+# ---------------------------------------------------------------------------
+# writing configuration
+# ---------------------------------------------------------------------------
+def put_row(client, asset_uid: str, features: "AssetFeatures",
+            xpath: str, action: str, params: list[dict]) -> None:
+    """Create or replace one advanced-features row.
+
+    Rows are identified by (question_xpath, action); `params` replaces what
+    was there, so callers pass the complete desired list.
+    """
+    uid = features.row_uid(xpath, action)
+    if uid:
+        client.update_advanced_feature(asset_uid, uid, params)
+    else:
+        client.create_advanced_feature(
+            asset_uid, question_xpath=xpath, action=action, params=params)
+
+
+def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str, *,
+                  transcribe_language: str = "",
+                  translate_languages: list[str] | None = None,
+                  questions: list[dict] | None = None,
+                  enable_qual: bool = True) -> None:
+    """Apply a full configuration for one audio question.
+
+    Everything here is scoped to a single `question_xpath` because that is how
+    the server models it: analysis questions belong to one audio question, not
+    to the form. Configuring a second recording means calling this again.
+    """
+    if transcribe_language:
+        language, _ = split_language(transcribe_language)
+        put_row(client, asset_uid, features, xpath, ACTION_TRANSCRIBE,
+                [{"language": language}])
+
+    if translate_languages is not None:
+        put_row(client, asset_uid, features, xpath, ACTION_TRANSLATE,
+                [{"language": split_language(l)[0]} for l in translate_languages])
+
+    if questions is not None:
+        put_row(client, asset_uid, features, xpath, ACTION_QUAL_DEFS,
+                qual_definitions(questions))
+        put_row(client, asset_uid, features, xpath, ACTION_QUAL,
+                auto_qual_params(questions) if enable_qual else [])
 
 
 def accept_transcript_body(xpath: str, language_code: str) -> dict:

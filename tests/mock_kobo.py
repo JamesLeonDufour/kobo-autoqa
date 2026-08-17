@@ -159,9 +159,52 @@ def list_features(uid: str):
 @app.post("/api/v2/assets/{uid}/advanced-features/")
 def create_feature(uid: str, body: dict = Body(...)):
     _require_new_api()
+    if not body.get("action") or not body.get("question_xpath"):
+        raise HTTPException(status_code=400, detail="action and question_xpath required")
+    _validate_params(body["action"], body.get("params") or [])
     row = {**body, "uid": "qaf" + uuid.uuid4().hex[:16]}
     STATE["features"].append(row)
     return row
+
+
+@app.patch("/api/v2/assets/{uid}/advanced-features/{feature_uid}/")
+def patch_feature(uid: str, feature_uid: str, body: dict = Body(...)):
+    _require_new_api()
+    for row in STATE["features"]:
+        if row["uid"] == feature_uid:
+            if "params" in body:
+                _validate_params(row["action"], body["params"])
+                row["params"] = body["params"]
+            return row
+    raise HTTPException(status_code=404, detail="Resource not found (404)")
+
+
+CHOICE_TYPES = {"qualSelectOne", "qualSelectMultiple"}
+QUAL_TYPES = CHOICE_TYPES | {"qualText", "qualInteger", "qualTags", "qualNote",
+                             "qualAutoKeywordCount"}
+ALLOWED = {"uuid", "type", "labels", "hint", "choices"}
+
+
+def _validate_params(action: str, params: list):
+    """Mimic the server's strict schema: unknown keys are rejected outright."""
+    for p in params:
+        if action == "manual_qual":
+            extra = set(p) - ALLOWED
+            if extra:
+                raise HTTPException(status_code=400,
+                                    detail=f"unexpected keys {sorted(extra)}")
+            if p.get("type") not in QUAL_TYPES:
+                raise HTTPException(status_code=400, detail=f"bad type {p.get('type')}")
+            if not (p.get("labels") or {}).get("_default"):
+                raise HTTPException(status_code=400, detail="labels._default required")
+            if p["type"] in CHOICE_TYPES and not p.get("choices"):
+                raise HTTPException(status_code=400, detail="choices required")
+        elif action in ("automatic_bedrock_qual",):
+            if set(p) != {"uuid"}:
+                raise HTTPException(status_code=400, detail="only uuid allowed")
+        elif action in ("automatic_google_transcription", "automatic_google_translation"):
+            if set(p) - {"language"}:
+                raise HTTPException(status_code=400, detail="only language allowed")
 
 
 def _version(data: dict) -> dict:

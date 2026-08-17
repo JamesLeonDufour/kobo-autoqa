@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response
 
 from . import payloads as P
 from . import runtime
+from . import supplement as S
 from .assetconf import defaults_from_env, resolve, save as save_cfg
 from .auth import COOKIE_NAME, check_password, issue_token, require_admin
 from .common import make_client, make_store, submission_uuid
@@ -192,15 +193,26 @@ def list_assets(q: str = "", limit: int = 200) -> dict:
 
 @guarded.get("/assets/{asset_uid}")
 def asset_detail(asset_uid: str) -> dict:
+    features: S.AssetFeatures | None = None
+    schema: dict = {}
     with _client() as c:
         asset = _kobo_guard(c.get_asset, asset_uid)
+        # Current servers expose /advanced-features/; only fall back to
+        # sniffing the old submission schema when they do not.
         try:
-            schema = c.get_advanced_submission_schema(asset_uid)
-        except KoboError as exc:
-            schema = {"_error": str(exc)}
+            features = S.AssetFeatures(c.list_advanced_features(asset_uid))
+        except KoboError:
+            features = None
+        if features is None:
+            try:
+                schema = c.get_advanced_submission_schema(asset_uid)
+            except KoboError as exc:
+                schema = {"_error": str(exc)}
         hooks = _kobo_guard(c.list_hooks, asset_uid)
 
     advanced = asset.get("advanced_features") or {}
+    if features is not None:
+        return _supplement_detail(asset_uid, asset, features, hooks)
     media = P.media_question_xpaths(asset)
     cfg = resolve(settings, store(), asset_uid)
     expected_endpoint = (
@@ -230,6 +242,56 @@ def asset_detail(asset_uid: str) -> dict:
     }
 
 
+def _hook_view(asset_uid: str, hooks: list[dict]) -> tuple[list[dict], str]:
+    expected = (f"{settings.public_webhook_url.rstrip('/')}/kobo/hook/{asset_uid}"
+                if settings.public_webhook_url else "")
+    return ([{"uid": h.get("uid"), "name": h.get("name"), "endpoint": h.get("endpoint"),
+              "active": h.get("active"), "success_count": h.get("success_count"),
+              "failed_count": h.get("failed_count"),
+              "is_ours": h.get("endpoint") == expected}
+             for h in hooks], expected)
+
+
+def _supplement_detail(asset_uid: str, asset: dict, features: S.AssetFeatures,
+                       hooks: list[dict]) -> dict:
+    """Asset detail for a server speaking the current NLP API.
+
+    Configuration here is per audio question, so the response is shaped that
+    way: the UI picks one recording and edits the settings that belong to it.
+    """
+    media = P.media_question_xpaths(asset)
+    cfg = resolve(settings, store(), asset_uid)
+    hook_rows, expected = _hook_view(asset_uid, hooks)
+    per_question = {
+        x: {
+            "transcript_language": features.transcribe.get(x, ""),
+            "translation_languages": features.translate.get(x, []),
+            "qual_survey": features.definitions.get(x, []),
+            "auto_qual_uuids": features.qual.get(x, []),
+            "configured": bool(features.transcribe.get(x) or features.definitions.get(x)),
+        }
+        for x in sorted(set(media) | set(features.xpaths) | set(features.definitions))
+    }
+    return {
+        "uid": asset_uid,
+        "name": asset.get("name"),
+        "submission_count": asset.get("deployment__submission_count") or 0,
+        "media_questions": media,
+        "configured_xpaths": sorted(per_question),
+        "detected_dialect": P.SUPPLEMENT,
+        "supports_hints": True,
+        "per_question": per_question,
+        # Kept for the older UI paths; meaningless on this dialect.
+        "qual_survey": [],
+        "advanced_features": {},
+        "schema": {},
+        "config": cfg.to_dict(),
+        "managed": asset_uid in store().all_asset_settings(),
+        "hooks": hook_rows,
+        "expected_endpoint": expected,
+    }
+
+
 @guarded.put("/assets/{asset_uid}/config")
 def save_config(asset_uid: str, patch: dict = Body(...)) -> dict:
     if isinstance(patch.get("translation_languages"), str):
@@ -249,6 +311,46 @@ def unmanage(asset_uid: str) -> dict:
 # ---------------------------------------------------------------------------
 # qual survey (the preset analysis questions)
 # ---------------------------------------------------------------------------
+def _save_qual_supplement(c, asset_uid: str, features: S.AssetFeatures,
+                          payload: dict, survey: list[dict]) -> dict:
+    """Write one audio question's configuration through the current API."""
+    xpaths = payload.get("xpaths") or []
+    if len(xpaths) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="This server stores analysis questions per audio question. "
+                   "Select exactly one recording to configure.",
+        )
+    xpath = xpaths[0]
+
+    try:
+        definitions = S.qual_definitions(survey)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.get("dry_run"):
+        return {"ok": True, "dry_run": True, "xpath": xpath,
+                "manual_qual": definitions,
+                "automatic_bedrock_qual": S.auto_qual_params(survey)}
+
+    try:
+        S.sync_question(
+            c, asset_uid, features, xpath,
+            transcribe_language=payload.get("transcript_language") or "",
+            translate_languages=payload.get("translation_languages") or [],
+            questions=survey,
+            enable_qual=payload.get("enable_qual", True),
+        )
+        refreshed = S.AssetFeatures(c.list_advanced_features(asset_uid))
+    except KoboError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"ok": True, "xpath": xpath, "qual_survey": refreshed.definitions.get(xpath, []),
+            "auto_qual_uuids": refreshed.qual.get(xpath, []),
+            "transcript_language": refreshed.transcribe.get(xpath, ""),
+            "translation_languages": refreshed.translate.get(xpath, [])}
+
+
 @guarded.put("/assets/{asset_uid}/qual")
 def save_qual(asset_uid: str, payload: dict = Body(...)) -> dict:
     """Write the preset analysis questions into the asset's advanced_features."""
@@ -265,6 +367,15 @@ def save_qual(asset_uid: str, payload: dict = Body(...)) -> dict:
                 choice["uuid"] = str(uuidlib.uuid4())
 
     with _client() as c:
+        # Current servers store this per audio question through a different
+        # endpoint; writing the legacy blob there would be silently ignored.
+        try:
+            features = S.AssetFeatures(c.list_advanced_features(asset_uid))
+        except KoboError:
+            features = None
+        if features is not None:
+            return _save_qual_supplement(c, asset_uid, features, payload, survey)
+
         asset = _kobo_guard(c.get_asset, asset_uid)
         advanced = asset.get("advanced_features") or {}
         if not xpaths:

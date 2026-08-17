@@ -270,7 +270,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           <div class="n">1</div>
           <div class="body">
             <h2>Server capability check</h2>
-            <p class="muted small" style="margin:2px 0 10px">
+            <p class="muted small" style="margin:2px 0 10px" id="step1Note">
               What the <code>advanced_submission_post</code> endpoint on this server accepts.
               The dialect decides the payload shape the worker sends.</p>
             <div class="row">
@@ -278,11 +278,12 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
               <span id="dialectBadge" class="badge st-idle"><span class="dot"></span>—</span>
               <select id="cfgDialect" style="width:auto">
                 <option value="auto">auto-detect</option>
+                <option value="supplement">supplement (current API)</option>
                 <option value="legacy">legacy (googlets / googletx)</option>
                 <option value="20250820">20250820 (Action enum)</option>
               </select>
             </div>
-            <details style="margin-top:10px">
+            <details style="margin-top:10px" id="schemaBlock">
               <summary>Raw advanced_submission_schema</summary>
               <pre id="schemaDump" style="margin-top:8px"></pre>
             </details>
@@ -294,7 +295,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           <div class="n">2</div>
           <div class="body">
             <h2>Audio questions to process</h2>
-            <p class="muted small" style="margin:2px 0 10px">
+            <p class="muted small" style="margin:2px 0 10px" id="step2Note">
               Detected from the form definition. Untick any recording you do not want analysed.</p>
             <div id="xpathList" class="row"></div>
           </div>
@@ -310,7 +311,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
                 <input type="text" id="cfgTranscript" placeholder="fr-FR"></label>
               <label class="field"><span>Translate into (comma separated, blank = skip)</span>
                 <input type="text" id="cfgTranslations" placeholder="en, es"></label>
-              <label class="field"><span>Language AutoQA reads (blank = original transcript)</span>
+              <label class="field" id="qualSourceField"><span>Language AutoQA reads (blank = original transcript)</span>
                 <input type="text" id="cfgQualSource" placeholder="en"></label>
             </div>
             <label class="switch"><input type="checkbox" id="cfgEnableQual"> Run qualitative analysis</label>
@@ -483,7 +484,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
       </header>
       <div class="scroll">
         <table>
-          <thead><tr><th>Submission</th><th>Form</th><th>Stage</th><th class="num">Tries</th><th>Updated</th><th>Detail</th><th></th></tr></thead>
+          <thead><tr><th>Submission</th><th>Form</th><th>Stage</th><th class="num" title="Worker passes over this submission. Each request and each poll for a result counts as one; a full run is normally 6-10, not retries.">Passes</th><th>Updated</th><th>Detail</th><th></th></tr></thead>
           <tbody id="jobRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -507,6 +508,9 @@ const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const API = "/admin/api";
 
 let ENV = {}, ASSETS = [], CUR = null, QUAL = [], TIMER = null;
+// Which audio question the Setup tab is editing (current API only, where a
+// configuration belongs to exactly one recording).
+let ACTIVE_XPATH = null;
 
 /* ------------------------------ helpers ------------------------------ */
 function toast(msg, kind="") {
@@ -712,6 +716,7 @@ $("#reloadAssets").addEventListener("click", loadAssets);
 
 /* ------------------------------- setup ------------------------------- */
 async function openAsset(uid) {
+  if (!CUR || CUR.uid !== uid) ACTIVE_XPATH = null;  // new form, new selection
   selectTab("setup");
   $("#noAsset").classList.remove("hidden");
   $("#setupBody").classList.add("hidden");
@@ -732,38 +737,70 @@ function renderSetup() {
   $("#setupName").textContent = c.name || "(untitled)";
   $("#setupUid").textContent  = c.uid;
 
+  const NEW_API = c.detected_dialect === "supplement";
+
   // step 1 — dialect
-  const known = c.detected_dialect && !(c.schema && c.schema._error);
+  const known = NEW_API || (c.detected_dialect && !(c.schema && c.schema._error));
   $("#dialectBadge").className = "badge " + (known ? "st-good" : "st-warning");
   $("#dialectBadge").innerHTML = `<span class="dot"></span>${esc(c.detected_dialect || "unknown")}`;
   $("#step1").classList.toggle("ok", !!known);
   $("#cfgDialect").value = cfg.schema_dialect || "auto";
-  $("#schemaDump").textContent = JSON.stringify(c.schema, null, 2);
+  // The old schema endpoint does not exist on the current API, so showing its
+  // 404 body as "raw schema" would just be noise.
+  $("#schemaBlock").classList.toggle("hidden", NEW_API);
+  $("#step1Note").textContent = NEW_API
+    ? "This server uses the current advanced-features API. Analysis questions are stored per audio question."
+    : "What the advanced_submission_post endpoint on this server accepts. The dialect decides the payload shape the worker sends.";
+  if (!NEW_API) $("#schemaDump").textContent = JSON.stringify(c.schema, null, 2);
 
-  // step 2 — questions
+  // step 2 — questions. On the current API a configuration belongs to exactly
+  // one recording, so this becomes a single choice rather than a multi-select.
   const chosen = cfg.xpaths && cfg.xpaths.length ? cfg.xpaths
                : (c.configured_xpaths.length ? c.configured_xpaths : c.media_questions);
-  $("#xpathList").innerHTML = c.media_questions.length
-    ? c.media_questions.map(x => `<label class="switch chip">
+  const perQ = c.per_question || {};
+  if (!c.media_questions.length) {
+    $("#xpathList").innerHTML = `<span class="badge st-warning"><span class="dot"></span>No audio questions found on this form</span>`;
+  } else if (NEW_API) {
+    if (!ACTIVE_XPATH || !c.media_questions.includes(ACTIVE_XPATH))
+      ACTIVE_XPATH = chosen.find(x => c.media_questions.includes(x)) || c.media_questions[0];
+    $("#xpathList").innerHTML = c.media_questions.map(x => `<label class="switch chip">
+        <input type="radio" name="xp" class="xp" value="${esc(x)}" ${x === ACTIVE_XPATH ? "checked" : ""}>
+        <span class="mono">${esc(x)}</span>
+        ${(perQ[x] && perQ[x].configured) ? `<span class="badge st-good" style="padding:0 6px"><span class="dot"></span>set up</span>` : ""}
+      </label>`).join("");
+    $$(".xp").forEach(r => r.addEventListener("change", () => {
+      ACTIVE_XPATH = r.value;
+      renderSetup();
+    }));
+  } else {
+    $("#xpathList").innerHTML = c.media_questions.map(x => `<label class="switch chip">
         <input type="checkbox" class="xp" value="${esc(x)}" ${chosen.includes(x) ? "checked" : ""}>
-        <span class="mono">${esc(x)}</span></label>`).join("")
-    : `<span class="badge st-warning"><span class="dot"></span>No audio questions found on this form</span>`;
+        <span class="mono">${esc(x)}</span></label>`).join("");
+  }
+  $("#step2Note").textContent = NEW_API
+    ? "This server stores a configuration per recording, so pick one. Languages and analysis questions below apply to it alone — configure a second recording by selecting it and applying again."
+    : "Detected from the form definition. Untick any recording you do not want analysed.";
   $("#step2").classList.toggle("ok", c.media_questions.length > 0);
 
-  // step 3 — languages
+  // step 3 — languages. On the current API these live on the server, per
+  // recording, so show what it actually holds rather than our defaults.
+  const q = NEW_API ? (perQ[ACTIVE_XPATH] || {}) : null;
   $("#cfgEnabled").checked      = cfg.enabled;
-  $("#cfgTranscript").value     = cfg.transcript_language || "";
-  $("#cfgTranslations").value   = (cfg.translation_languages || []).join(", ");
+  $("#cfgTranscript").value     = NEW_API ? (q.transcript_language || cfg.transcript_language || "")
+                                          : (cfg.transcript_language || "");
+  $("#cfgTranslations").value   = NEW_API ? (q.translation_languages || []).join(", ")
+                                          : (cfg.translation_languages || []).join(", ");
   $("#cfgQualSource").value     = cfg.qual_source_language || "";
-  $("#cfgEnableQual").checked   = cfg.enable_qual;
-  $("#step3").classList.toggle("ok", !!cfg.transcript_language);
+  $("#cfgEnableQual").checked   = NEW_API ? (q.auto_qual_uuids || []).length > 0 : cfg.enable_qual;
+  $("#qualSourceField").classList.toggle("hidden", NEW_API);
+  $("#step3").classList.toggle("ok", !!$("#cfgTranscript").value);
 
   // step 4 — qual questions
-  QUAL = JSON.parse(JSON.stringify(c.qual_survey || []));
+  QUAL = JSON.parse(JSON.stringify((NEW_API ? q.qual_survey : c.qual_survey) || []));
   renderQual();
 
   // step 5
-  $("#step5").classList.toggle("ok", (c.qual_survey || []).length > 0);
+  $("#step5").classList.toggle("ok", QUAL.length > 0);
   $("#applyState").textContent = c.managed ? "" : "Not applied yet.";
   $("#previewDump").classList.add("hidden");
 
@@ -771,6 +808,12 @@ function renderSetup() {
   renderHooks();
 
   $("#step7").classList.toggle("ok", false);
+}
+
+function hintText(q) {
+  const h = q.hint;
+  if (!h) return "";
+  return (h.labels && h.labels._default) || (typeof h === "string" ? h : "") || "";
 }
 
 function renderQual() {
@@ -788,6 +831,9 @@ function renderQual() {
         <input type="text" class="qlabel" value="${esc(label)}" placeholder="Question put to the model…">
         <button class="sm danger qdel" title="Remove">✕</button>
       </div>
+      <input type="text" class="qhint" value="${esc(hintText(q))}"
+             placeholder="Hint — extra guidance for the model, e.g. “1 is lowest, 5 is best”"
+             style="margin-top:6px">
       ${isSel ? `<div class="choices">
         ${(q.choices||[]).map((ch,j) => `<div class="row" data-j="${j}">
             <input type="text" class="clabel" value="${esc((ch.labels&&ch.labels._default)||ch.label||"")}" placeholder="Choice label">
@@ -807,6 +853,11 @@ function renderQual() {
     });
     $(".qlabel", el).addEventListener("input", e => {
       QUAL[i].labels = QUAL[i].labels || {}; QUAL[i].labels._default = e.target.value;
+    });
+    $(".qhint", el).addEventListener("input", e => {
+      const v = e.target.value.trim();
+      if (v) QUAL[i].hint = { labels: { _default: v } };
+      else delete QUAL[i].hint;
     });
     $(".qdel", el).addEventListener("click", () => { QUAL.splice(i,1); renderQual(); });
     $$(".clabel", el).forEach((inp, j) => inp.addEventListener("input", e => {
@@ -845,7 +896,13 @@ $("#loadTemplate").addEventListener("click", () => {
   toast("Template loaded — edit the questions, then Save & apply.");
 });
 
-function pickedXpaths() { return $$(".xp").filter(c => c.checked).map(c => c.value); }
+function pickedXpaths() {
+  const picked = $$(".xp").filter(c => c.checked).map(c => c.value);
+  // The current API scopes a configuration to one recording; ACTIVE_XPATH is
+  // the radio selection on that dialect.
+  if (CUR && CUR.detected_dialect === "supplement") return ACTIVE_XPATH ? [ACTIVE_XPATH] : [];
+  return picked;
+}
 function langList(v) { return v.split(",").map(s => s.trim()).filter(Boolean); }
 
 function currentConfig() {
@@ -865,6 +922,9 @@ async function applySetup(dryRun) {
   const payload = {
     qual_survey: QUAL, xpaths: cfg.xpaths,
     translation_languages: cfg.translation_languages, dry_run: dryRun,
+    // Used by the current API, which stores these on the server per recording.
+    transcript_language: cfg.transcript_language,
+    enable_qual: cfg.enable_qual,
   };
   const btn = dryRun ? $("#previewBtn") : $("#applyBtn");
   btn.disabled = true;
@@ -872,7 +932,9 @@ async function applySetup(dryRun) {
     const res = await api(`/assets/${encodeURIComponent(CUR.uid)}/qual`,
       { method: "PUT", body: JSON.stringify(payload) });
     if (dryRun) {
-      $("#previewDump").textContent = JSON.stringify(res.advanced_features, null, 2);
+      $("#previewDump").textContent = JSON.stringify(
+        res.advanced_features || { manual_qual: res.manual_qual,
+                                   automatic_bedrock_qual: res.automatic_bedrock_qual }, null, 2);
       $("#previewDump").classList.remove("hidden");
       return;
     }
@@ -881,8 +943,10 @@ async function applySetup(dryRun) {
     QUAL = res.qual_survey || QUAL;
     $("#applyState").textContent = "Applied just now.";
     $("#step5").classList.add("ok");
-    toast("Configuration applied to KoboToolbox.", "ok");
-    renderQual();
+    toast(res.xpath ? `Configuration applied to ${res.xpath}.`
+                    : "Configuration applied to KoboToolbox.", "ok");
+    // Re-read from the server so the form shows what was actually stored.
+    await openAsset(CUR.uid);
     loadAssets();
   } catch (e) { toast(e.message, "err"); }
   finally { btn.disabled = false; }

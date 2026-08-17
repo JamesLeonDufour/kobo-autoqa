@@ -99,6 +99,46 @@ def main() -> int:
                     all(S.qual_state(sup, XPATH, q) == "complete"
                         for q in ctx.features.qual[XPATH]))
 
+    print("\n[configuring from the app]")
+    # A question the server has never heard of, with hints on the question and
+    # a choice -- this is the case that silently did nothing before.
+    new_survey = [
+        {"uuid": "33333333-3333-4333-8333-333333333333", "type": "qualText",
+         "labels": {"_default": "Which needs are mentioned?"},
+         "hint": {"labels": {"_default": "List them, comma separated"}}},
+        {"uuid": "44444444-4444-4444-8444-444444444444", "type": "qualSelectOne",
+         "labels": {"_default": "How successful would you rank this"},
+         "hint": {"labels": {"_default": "One being the lowest, 5 the best"}},
+         "choices": [{"uuid": "55555555-5555-4555-8555-555555555555",
+                      "labels": {"_default": "1"}},
+                     {"uuid": "66666666-6666-4666-8666-666666666666",
+                      "labels": {"_default": "5"}}]},
+        {"uuid": "77777777-7777-4777-8777-777777777777", "type": "qualNote",
+         "labels": {"_default": "Section heading for human coders"}},
+    ]
+    feats = S.AssetFeatures(client.list_advanced_features(U))
+    S.sync_question(client, U, feats, XPATH, transcribe_language="fr-FR",
+                    translate_languages=["en"], questions=new_survey)
+    after = S.AssetFeatures(client.list_advanced_features(U))
+
+    fails += not ok("new questions stored on the server",
+                    [q["labels"]["_default"] for q in after.definitions[XPATH]]
+                    == ["Which needs are mentioned?", "How successful would you rank this",
+                        "Section heading for human coders"],
+                    [q["labels"]["_default"] for q in after.definitions[XPATH]])
+    fails += not ok("question hint kept",
+                    after.definitions[XPATH][0]["hint"]["labels"]["_default"]
+                    == "List them, comma separated")
+    fails += not ok("choices kept", len(after.definitions[XPATH][1]["choices"]) == 2)
+    fails += not ok("notes excluded from AI answering",
+                    after.qual[XPATH] == [new_survey[0]["uuid"], new_survey[1]["uuid"]],
+                    after.qual[XPATH])
+    fails += not ok("language split on write", after.transcribe[XPATH] == "fr",
+                    after.transcribe[XPATH])
+    fails += not ok("re-applying replaces rather than duplicates",
+                    len([r for r in after.rows
+                         if r["action"] == "manual_qual"]) == 1)
+
     print("\n[no calls to the removed endpoints]")
     r = httpx.get(f"http://127.0.0.1:8899/api/v2/assets/{U}/advanced_submission_post/")
     fails += not ok("legacy endpoint really is 404 in this mode", r.status_code == 404)
