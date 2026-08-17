@@ -459,6 +459,7 @@ def jobs(stage: str = "", limit: int = 100) -> dict:
             {"asset_uid": r["asset_uid"], "submission_uuid": r["submission_uuid"],
              "stage": r["stage"], "attempts": r["attempts"],
              "next_attempt_at": r["next_attempt_at"], "last_error": r["last_error"],
+             "note": (r["note"] if "note" in r.keys() else None),
              "updated_at": r["updated_at"], "created_at": r["created_at"]}
             for r in rows
         ],

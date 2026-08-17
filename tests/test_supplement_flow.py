@@ -83,6 +83,9 @@ def main() -> int:
                                if r["submission_uuid"] == SUB][0]["stage"], delay=0)
 
     fails += not ok("reached done", seen[-1] == STAGE_DONE, " -> ".join(seen))
+    row = [r for r in store.list_jobs(limit=50) if r["submission_uuid"] == SUB][0]
+    fails += not ok("each pass records why it stopped",
+                    bool(row["note"]) and "analysis answer" in row["note"], row["note"])
     fails += not ok("passed through every stage",
                     {"transcribe", "translate", "qual"} <= set(seen), seen)
 
@@ -110,7 +113,8 @@ def main() -> int:
          "labels": {"_default": "How successful would you rank this"},
          "hint": {"labels": {"_default": "One being the lowest, 5 the best"}},
          "choices": [{"uuid": "55555555-5555-4555-8555-555555555555",
-                      "labels": {"_default": "1"}},
+                      "labels": {"_default": "1"},
+                      "hint": {"labels": {"_default": "Pick this when nothing went well"}}},
                      {"uuid": "66666666-6666-4666-8666-666666666666",
                       "labels": {"_default": "5"}}]},
         {"uuid": "77777777-7777-4777-8777-777777777777", "type": "qualNote",
@@ -130,6 +134,10 @@ def main() -> int:
                     after.definitions[XPATH][0]["hint"]["labels"]["_default"]
                     == "List them, comma separated")
     fails += not ok("choices kept", len(after.definitions[XPATH][1]["choices"]) == 2)
+    fails += not ok("choice hint kept",
+                    after.definitions[XPATH][1]["choices"][0]["hint"]["labels"]["_default"]
+                    == "Pick this when nothing went well",
+                    after.definitions[XPATH][1]["choices"][0])
     # uuids are minted per recording, so compare against what was stored.
     stored_defs = after.definitions[XPATH]
     fails += not ok("notes excluded from AI answering",

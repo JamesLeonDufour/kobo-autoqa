@@ -853,8 +853,9 @@ function renderQual() {
              placeholder="Hint — extra guidance for the model, e.g. “1 is lowest, 5 is best”"
              style="margin-top:6px">
       ${isSel ? `<div class="choices">
-        ${(q.choices||[]).map((ch,j) => `<div class="row" data-j="${j}">
-            <input type="text" class="clabel" value="${esc((ch.labels&&ch.labels._default)||ch.label||"")}" placeholder="Choice label">
+        ${(q.choices||[]).map((ch,j) => `<div class="row" data-j="${j}" style="align-items:flex-start">
+            <input type="text" class="clabel" value="${esc((ch.labels&&ch.labels._default)||ch.label||"")}" placeholder="Choice label" style="flex:1 1 40%">
+            <input type="text" class="chint" value="${esc(hintText(ch))}" placeholder="Choice hint — when to pick it" style="flex:1 1 40%">
             <button class="sm danger cdel">✕</button></div>`).join("")}
         <button class="sm caddb">+ Choice</button></div>` : ""}
       ${q.uuid ? `<div class="small muted mono" style="margin-top:6px">uuid ${esc(q.uuid)}</div>` : ""}
@@ -881,6 +882,11 @@ function renderQual() {
     $$(".clabel", el).forEach((inp, j) => inp.addEventListener("input", e => {
       QUAL[i].choices[j].labels = QUAL[i].choices[j].labels || {};
       QUAL[i].choices[j].labels._default = e.target.value;
+    }));
+    $$(".chint", el).forEach((inp, j) => inp.addEventListener("input", e => {
+      const v = e.target.value.trim();
+      if (v) QUAL[i].choices[j].hint = { labels: { _default: v } };
+      else delete QUAL[i].choices[j].hint;
     }));
     $$(".cdel", el).forEach((b, j) => b.addEventListener("click", () => {
       QUAL[i].choices.splice(j,1); renderQual();
@@ -1070,8 +1076,8 @@ async function loadJobs() {
       <td>${stageBadge(j.stage)}</td>
       <td class="num">${j.attempts}</td>
       <td class="small muted">${ago(j.updated_at)}</td>
-      <td class="small" style="color:${j.last_error ? "var(--critical)" : "inherit"};max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-          title="${esc(j.last_error || "")}">${esc(j.last_error || "—")}</td>
+      <td class="small" style="color:${j.last_error ? "var(--critical)" : "var(--text-secondary)"};max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${esc(j.last_error || j.note || "")}">${esc(j.last_error || j.note || "—")}</td>
       <td class="row" style="gap:5px;border-bottom:0">
         <button class="sm jview">View</button><button class="sm jretry">Retry</button></td>
     </tr>`).join("") : `<tr><td colspan="7" class="muted">Nothing queued yet.</td></tr>`;

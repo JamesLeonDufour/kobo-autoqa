@@ -76,6 +76,15 @@ def _labels(value: Any) -> dict:
     return {"_default": str(value or "")}
 
 
+def _hint_block(value: Any) -> dict | None:
+    """Normalise a hint into {"labels": {...}}, accepting a bare string too."""
+    text = value.get("labels") if isinstance(value, dict) and "labels" in value else value
+    if not text:
+        return None
+    labels = _labels(text)
+    return {"labels": labels} if labels.get("_default") else None
+
+
 def qual_definition(question: dict) -> dict:
     """Normalise one analysis question into the shape the server stores.
 
@@ -91,16 +100,21 @@ def qual_definition(question: dict) -> dict:
         "type": qtype,
         "labels": _labels(question.get("labels") or question.get("label")),
     }
-    hint = question.get("hint")
-    hint_text = hint.get("labels") if isinstance(hint, dict) and "labels" in hint else hint
-    if hint_text:
-        out["hint"] = {"labels": _labels(hint_text)}
+    hint = _hint_block(question.get("hint"))
+    if hint:
+        out["hint"] = hint
     if qtype in CHOICE_TYPES:
-        out["choices"] = [
-            {"uuid": c["uuid"], "labels": _labels(c.get("labels") or c.get("label"))}
-            for c in question.get("choices") or []
-            if c.get("uuid")
-        ]
+        choices = []
+        for c in question.get("choices") or []:
+            if not c.get("uuid"):
+                continue
+            choice = {"uuid": c["uuid"], "labels": _labels(c.get("labels") or c.get("label"))}
+            # Choices carry their own hint, same shape as the question's.
+            choice_hint = _hint_block(c.get("hint"))
+            if choice_hint:
+                choice["hint"] = choice_hint
+            choices.append(choice)
+        out["choices"] = choices
     return out
 
 

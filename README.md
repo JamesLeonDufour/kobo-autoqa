@@ -348,6 +348,24 @@ one recording, three translations and four analysis questions takes roughly:
 So 6–10 passes is the normal shape of success. Retries after an *error* are
 visible in the Detail column, and only those are worth investigating.
 
+You do not have to infer any of this. Every pass records what it did and what
+it is waiting for, shown in the Monitor tab's Detail column and logged:
+
+```
+pass 4: translation: requested 3 — re-checking in 20s
+pass 5: translation: accepted 3 — re-checking in 20s
+pass 6: analysis: requested 8 — re-checking in 20s
+pass 9: 2 transcript(s) ready, moving to translate
+pass 11: complete: 16 analysis answer(s)
+```
+
+Errors still take precedence in that column and are shown in red; the note is
+what you see when a job is simply working.
+
+```bash
+docker compose logs -f worker | grep 'pass '
+```
+
 ---
 
 ## Tuning
@@ -387,7 +405,7 @@ reject fails here too.
 pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
 python tests/test_admin_flow.py                # 40 assertions, all should PASS
-python tests/test_supplement_flow.py           # 33 assertions, current NLP API
+python tests/test_supplement_flow.py           # 35 assertions, current NLP API
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \
@@ -536,9 +554,17 @@ WARNING app.supplement: Skipping qualTags question 0ae66c93 on main_impacts:
 Those questions are still defined on the form and still collectable by a human
 coder — they just are not sent to the model.
 
-Questions and individual choices can carry a **hint**, which is extra guidance
-passed to the model (`{"hint": {"labels": {"_default": "1 is lowest, 5 is best"}}}`).
-The Setup tab exposes it as a second field under each question.
+Both questions **and individual choices** can carry a **hint** — extra guidance
+for the model, in the same shape on either:
+
+```json
+{"hint": {"labels": {"_default": "1 is lowest, 5 is best"}}}
+```
+
+The Setup tab exposes it as a second field under each question and beside each
+choice, so you can say what a question means *and* when to pick a particular
+option. Choice hints are worth the effort on select-one scales, where the label
+is often just a number.
 
 The pipeline reads all of this from the server rather than imposing its own,
 because the analysis question uuids have to match what the server holds. If a

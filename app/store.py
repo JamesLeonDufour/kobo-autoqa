@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at REAL NOT NULL DEFAULT 0,
     last_error      TEXT,
+    note            TEXT,
     payload         TEXT,
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL,
@@ -61,6 +62,10 @@ class Store:
         self._lock = threading.Lock()
         with self._conn() as c:
             c.executescript(SCHEMA)
+            # Added after the first release; existing volumes need it too.
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+            if "note" not in cols:
+                c.execute("ALTER TABLE jobs ADD COLUMN note TEXT")
 
     @contextmanager
     def _conn(self):
@@ -113,7 +118,14 @@ class Store:
 
     def advance(self, asset_uid: str, submission_uuid: str, stage: str,
                 delay: float = 0.0, error: str | None = None,
-                bump_attempts: bool = False) -> None:
+                bump_attempts: bool = False, note: str | None = None) -> None:
+        """`note` says what this pass did and what it is waiting for, so the
+        attempt count is readable rather than just a number.
+
+        Passing note=None leaves the existing one alone -- callers that only
+        reschedule a job (clearing a backoff, requeueing) should not erase the
+        explanation the last real pass wrote.
+        """
         now = time.time()
         with self._lock, self._conn() as c:
             c.execute(
@@ -122,11 +134,13 @@ class Store:
                 SET stage = ?,
                     next_attempt_at = ?,
                     last_error = ?,
+                    note = {"?" if note is not None else "note"},
                     updated_at = ?,
                     attempts = attempts + {1 if bump_attempts else 0}
                 WHERE asset_uid = ? AND submission_uuid = ?
                 """,
-                (stage, now + delay, error, now, asset_uid, submission_uuid),
+                (stage, now + delay, error, *([note] if note is not None else []),
+                 now, asset_uid, submission_uuid),
             )
 
     def stats(self) -> dict[str, int]:

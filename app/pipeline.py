@@ -18,6 +18,24 @@ from .store import (
 log = logging.getLogger(__name__)
 
 
+def _note(what: str, *, requested: int = 0, accepted: int = 0, waiting: int = 0,
+          delay: float = 0.0) -> str:
+    """One line explaining why a pass ended without finishing.
+
+    Kobo's NLP is asynchronous, so most passes are a poll rather than a retry.
+    Saying so is the difference between "8 attempts" reading as trouble and
+    reading as normal progress.
+    """
+    bits = []
+    if requested:
+        bits.append(f"requested {requested}")
+    if accepted:
+        bits.append(f"accepted {accepted}")
+    if waiting:
+        bits.append(f"{waiting} still running")
+    return f"{what}: {', '.join(bits) or 'nothing to do'} — re-checking in {int(delay)}s"
+
+
 @dataclass
 class AssetContext:
     uid: str
@@ -159,13 +177,15 @@ class Pipeline:
                 handler = self._sup_qual if new_api else self._do_qual
             else:
                 handler = None
-            next_stage, delay = (handler(ctx, submission_uuid, supplement)
-                                 if handler else (STAGE_DONE, 0.0))
+            result = (handler(ctx, submission_uuid, supplement)
+                      if handler else (STAGE_DONE, 0.0, "nothing to do"))
+            # The older dialects' handlers return (stage, delay) only.
+            next_stage, delay, note = result if len(result) == 3 else (*result, "")
 
             self.store.advance(asset_uid, submission_uuid, next_stage,
-                               delay=delay, error=None, bump_attempts=True)
-            if next_stage == STAGE_DONE:
-                log.info("[%s/%s] complete", asset_uid, submission_uuid)
+                               delay=delay, error=None, bump_attempts=True, note=note)
+            log.info("[%s/%s] pass %s: %s", asset_uid, submission_uuid,
+                     attempts + 1, note or f"-> {next_stage}")
 
         except KoboError as exc:
             backoff = min(600, 30 * (2 ** min(attempts, 5)))
@@ -178,8 +198,8 @@ class Pipeline:
                                delay=300, error=repr(exc)[:1000], bump_attempts=True)
 
     # -- stages: current API (supplement dialect) ---------------------------
-    def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float]:
-        pending = False
+    def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
+        requested = accepted = waiting = ready = 0
         for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
             status, _text = S.transcript_state(sup, xpath)
             if S.is_done(status):
@@ -188,24 +208,30 @@ class Pipeline:
                 if not S.transcript_accepted(sup, xpath):
                     self._patch(ctx.uid, uuid, S.accept_transcript_body(xpath, language),
                                 f"accept transcript {xpath} [{language}]")
-                    pending = True
+                    accepted += 1
+                else:
+                    ready += 1
                 continue
             if S.is_pending(status):
-                pending = True
+                waiting += 1
                 continue
             self._patch(ctx.uid, uuid, S.transcribe_body(xpath, language),
                         f"transcribe {xpath} [{language}]")
-            pending = True
+            requested += 1
 
-        if pending:
-            return STAGE_TRANSCRIBE, self.s.async_poll_seconds
-        return (STAGE_TRANSLATE if (ctx.features and ctx.features.translate) else STAGE_QUAL), 2.0
+        if requested or accepted or waiting:
+            return STAGE_TRANSCRIBE, self.s.async_poll_seconds, _note(
+                "transcription", requested=requested, accepted=accepted,
+                waiting=waiting, delay=self.s.async_poll_seconds)
+        nxt = STAGE_TRANSLATE if (ctx.features and ctx.features.translate) else STAGE_QUAL
+        return nxt, 2.0, f"{ready} transcript(s) ready, moving to {nxt}"
 
-    def _sup_translate(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float]:
-        pending = False
+    def _sup_translate(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
+        requested = accepted = waiting = blocked = 0
         for xpath, languages in (ctx.features.translate if ctx.features else {}).items():
             # Nothing to translate from until an *accepted* transcript exists.
             if not S.transcript_accepted(sup, xpath):
+                blocked += len(languages)
                 continue
             for language in languages:
                 status = S.translation_state(sup, xpath, language)
@@ -214,42 +240,50 @@ class Pipeline:
                         self._patch(ctx.uid, uuid,
                                     S.accept_translation_body(xpath, language),
                                     f"accept translation {xpath} [{language}]")
-                        pending = True
+                        accepted += 1
                     continue
                 if S.is_pending(status):
-                    pending = True
+                    waiting += 1
                     continue
                 self._patch(ctx.uid, uuid, S.translate_body(xpath, language),
                             f"translate {xpath} -> {language}")
-                pending = True
+                requested += 1
 
-        if pending:
-            return STAGE_TRANSLATE, self.s.async_poll_seconds
-        return STAGE_QUAL, 2.0
+        if requested or accepted or waiting:
+            return STAGE_TRANSLATE, self.s.async_poll_seconds, _note(
+                "translation", requested=requested, accepted=accepted,
+                waiting=waiting, delay=self.s.async_poll_seconds)
+        if blocked:
+            return STAGE_TRANSCRIBE, 2.0, (
+                f"{blocked} translation(s) need an accepted transcript first")
+        return STAGE_QUAL, 2.0, "translations ready, moving to analysis"
 
-    def _sup_qual(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float]:
+    def _sup_qual(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
         if not ctx.cfg.enable_qual:
-            return STAGE_DONE, 0.0
-        pending = False
+            return STAGE_DONE, 0.0, "analysis disabled for this form"
+        requested = waiting = answered = 0
         for xpath in (ctx.features.qual if ctx.features else {}):
             if not S.transcript_accepted(sup, xpath):
                 continue
             for question_uuid in ctx.features.answerable_qual(xpath):
                 status = S.qual_state(sup, xpath, question_uuid)
                 if S.is_done(status):
+                    answered += 1
                     continue
                 if S.is_pending(status):
-                    pending = True
+                    waiting += 1
                     continue
                 # The schema takes one uuid per request, so this is one PATCH
                 # per analysis question.
                 self._patch(ctx.uid, uuid, S.qual_body(xpath, question_uuid),
                             f"qual {xpath} [{question_uuid[:8]}]")
-                pending = True
+                requested += 1
 
-        if pending:
-            return STAGE_QUAL, self.s.async_poll_seconds
-        return STAGE_DONE, 0.0
+        if requested or waiting:
+            return STAGE_QUAL, self.s.async_poll_seconds, _note(
+                "analysis", requested=requested, waiting=waiting,
+                delay=self.s.async_poll_seconds)
+        return STAGE_DONE, 0.0, f"complete: {answered} analysis answer(s)"
 
     def _patch(self, asset_uid: str, root_uuid: str, payload: dict, label: str) -> None:
         if self.s.dry_run:

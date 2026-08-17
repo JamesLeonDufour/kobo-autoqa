@@ -199,6 +199,15 @@ def _validate_params(action: str, params: list):
                 raise HTTPException(status_code=400, detail="labels._default required")
             if p["type"] in CHOICE_TYPES and not p.get("choices"):
                 raise HTTPException(status_code=400, detail="choices required")
+            for ch in p.get("choices") or []:
+                # The real schema is additionalProperties:false here too.
+                extra = set(ch) - {"uuid", "labels", "hint"}
+                if extra:
+                    raise HTTPException(status_code=400,
+                                        detail=f"unexpected choice keys {sorted(extra)}")
+                if not (ch.get("labels") or {}).get("_default"):
+                    raise HTTPException(status_code=400,
+                                        detail="choice labels._default required")
         elif action in ("automatic_bedrock_qual",):
             if set(p) != {"uuid"}:
                 raise HTTPException(status_code=400, detail="only uuid allowed")
