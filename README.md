@@ -205,7 +205,7 @@ curl -s http://127.0.0.1:8077/healthz | jq
 
 ### Step 4 — register the webhook (optional but recommended)
 
-Point an NPM proxy host at `127.0.0.1:8077` with a Let's Encrypt cert, then:
+Publish the API first (see [Putting it behind Nginx Proxy Manager](#putting-it-behind-nginx-proxy-manager)), then:
 
 ```bash
 docker compose run --rm worker python -m app.cli register-hook aBcDeFgHiJkLmNoPqRsTuV
@@ -219,6 +219,55 @@ This creates a Kobo REST Service pointing at
 
 The poller keeps running regardless, so a webhook outage means late results,
 never lost ones.
+
+---
+
+## Putting it behind Nginx Proxy Manager
+
+The `api` container joins two networks: its own `autoqa` network and the
+external `nginxproxy_default` network that the NPM stack creates. That second
+one is what lets NPM resolve the container **by name**, which is how every
+other proxied service on this host is wired — no host-port hop involved.
+
+The `127.0.0.1:8077` binding stays, but only for local `curl` and debugging.
+NPM does not use it (it cannot: the port is bound to the *host's* loopback,
+which is not reachable from inside the NPM container).
+
+In the NPM UI → **Hosts → Proxy Hosts → Add Proxy Host**:
+
+| Field | Value |
+|---|---|
+| Domain Names | `autoqa.bareit.be` |
+| Scheme | `http` |
+| Forward Hostname / IP | `kobo-autoqa-api` |
+| Forward Port | `8000` |
+| Websockets Support | on |
+| Block Common Exploits | on |
+| SSL → Certificate | request a new Let's Encrypt cert |
+| SSL → Force SSL + HTTP/2 | on |
+
+Then set `PUBLIC_WEBHOOK_URL=https://autoqa.bareit.be` in `.env` (or on the
+Connection tab) so registered webhooks point at the right place.
+
+> If you rename or recreate the compose project, the container name must stay
+> `kobo-autoqa-api` or NPM's proxy host will 502. The `name:` key at the top of
+> `docker-compose.yml` pins the project name so a renamed checkout does not
+> silently create a second stack with a fresh, empty volume.
+
+**Before exposing it publicly**, make sure `ADMIN_PASSWORD` and
+`WEBHOOK_SECRET` are real values and not the `change-me` placeholders from
+`.env.example`. The admin UI is the control plane for a form's NLP
+configuration and your Kobo token — it must not be reachable with a guessable
+password.
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # admin password
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # webhook secret
+docker compose up -d          # picks up the new .env
+```
+
+Changing `ADMIN_PASSWORD` signs out every existing session; changing
+`WEBHOOK_SECRET` means re-registering the Kobo REST Services.
 
 ---
 

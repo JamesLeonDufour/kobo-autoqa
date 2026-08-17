@@ -1,14 +1,19 @@
+# Explicit project name: without it Compose derives one from the directory,
+# so renaming the checkout would strand the running stack's volume.
+name: kobo-autoqa
+
 services:
   api:
     build: .
-    image: kobo-autoqa-pipeline:1.0.0
+    image: kobo-autoqa-pipeline:1.1.0
     container_name: kobo-autoqa-api
     restart: unless-stopped
     env_file: .env
     volumes:
       - autoqa_data:/data
     ports:
-      # Bind to loopback only; Nginx Proxy Manager terminates TLS in front.
+      # Loopback only, for local curl/debugging. Public traffic arrives over
+      # the shared nginxproxy network below, not through this binding.
       - "127.0.0.1:8077:8000"
     command: >
       uvicorn app.webhook:app
@@ -21,11 +26,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks: [autoqa]
+    # `nginxproxy` lets Nginx Proxy Manager resolve this container by name;
+    # point the proxy host at kobo-autoqa-api:8000.
+    networks: [autoqa, nginxproxy]
 
   worker:
     build: .
-    image: kobo-autoqa-pipeline:1.0.0
+    image: kobo-autoqa-pipeline:1.1.0
     container_name: kobo-autoqa-worker
     restart: unless-stopped
     env_file: .env
@@ -41,3 +48,7 @@ volumes:
 networks:
   autoqa:
     driver: bridge
+  # Created by the Nginx Proxy Manager stack; every proxied service joins it.
+  nginxproxy:
+    external: true
+    name: nginxproxy_default
