@@ -98,25 +98,32 @@ straight on the Connection tab. The worker idles quietly until credentials
 exist rather than crash-looping, and picks them up within one tick of you
 saving — no restart, no `docker compose` command.
 
-The Setup wizard steps:
+The Setup tab follows the shape of the problem: things that belong to the
+**form**, then things that belong to each **recording**.
 
-1. **Server capability check** — detects which NLP API the server speaks and
-   shows the dialect. Override it if auto-detection is wrong.
-2. **Audio questions** — auto-detected from the form definition. Tick every
-   recording to configure; on the current API each keeps its own settings, and
-   **Edit** loads one to change on its own.
-3. **Languages** — source language and translation targets. On the current API
-   these are read from, and written back to, the server per recording.
-4. **Preset analysis questions** — a visual builder for the qual survey (free
-   text, select one/multiple, tags, integer, note) with choices and hints. It
-   loads the recording's existing questions first, so you add to what is really
-   there; the starter template fills in only what is missing. UUIDs are held
-   stable per recording, so re-applying never duplicates columns.
-5. **Apply** — writes the configuration to KoboToolbox. "Preview payload" shows
-   the exact JSON first.
-6. **Trigger** — registers the Kobo REST Service webhook with the shared-secret
+**Form setup** — done once per form:
+
+1. **Server capability check** — detects which NLP API the server speaks.
+2. **Trigger** — registers the Kobo REST Service webhook with the shared-secret
    header, and shows its success/failure counts.
-7. **Backfill** — queue existing submissions.
+3. **Backfill** — queue existing submissions.
+
+**Audio questions** — a row per recording showing what that recording actually
+has on the server: audio language, translation targets, how many analysis
+questions, and how many of those the model answers. Differences between
+recordings are visible at a glance, and anything unconfigured says so.
+
+Choosing one opens its editor:
+
+1. **Languages** — source language and translation targets, read from and
+   written back to the server for that recording.
+2. **Analysis questions** — a visual builder (free text, select one/multiple,
+   tags, integer, note) with choices and hints on both questions and choices.
+   It loads the recording's existing questions first, so you add to what is
+   really there; the starter template fills in only what is missing. UUIDs are
+   held stable per recording, so re-applying never duplicates columns.
+3. **Apply** — writes it to that recording, plus any others ticked under
+   *Also apply to*. "Preview payload" shows the exact JSON first.
 
 Forms enabled in the UI are watched by the worker automatically — `ASSET_UIDS`
 in `.env` is optional and simply adds to that list.

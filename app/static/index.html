@@ -264,8 +264,12 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           <span class="spacer" style="flex:1"></span>
           <label class="switch small"><input type="checkbox" id="cfgEnabled"> Pipeline enabled</label>
         </header>
+        <p class="muted small" style="margin:0">These settings cover the whole form. Each audio
+          question is configured separately below.</p>
+      </div>
 
-        <!-- step 1 -->
+      <div class="card">
+        <header><h2 style="margin:0">Form setup</h2></header>
         <div class="step" id="step1">
           <div class="n">1</div>
           <div class="body">
@@ -290,20 +294,56 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           </div>
         </div>
 
-        <!-- step 2 -->
-        <div class="step" id="step2">
+        <div class="step" id="step6">
           <div class="n">2</div>
           <div class="body">
-            <h2>Audio questions to process</h2>
-            <p class="muted small" style="margin:2px 0 10px" id="step2Note">
-              Detected from the form definition. Untick any recording you do not want analysed.</p>
-            <div id="xpathList" class="row"></div>
+            <h2>Trigger</h2>
+            <p class="muted small" style="margin:2px 0 10px">
+              The interval poller always runs. A REST Service webhook makes it near-instant.</p>
+            <div id="hookArea"></div>
+            <div class="row" style="margin-top:10px">
+              <button id="hookBtn">Register webhook</button>
+              <span id="hookHint" class="small muted"></span>
+            </div>
           </div>
         </div>
 
-        <!-- step 3 -->
-        <div class="step" id="step3">
+        <div class="step" id="step7">
           <div class="n">3</div>
+          <div class="body">
+            <h2>Process existing submissions</h2>
+            <div class="row" style="margin-top:6px">
+              <span class="small sec">Last</span>
+              <input type="number" id="bfDays" value="7" min="1" style="width:80px">
+              <span class="small sec">days, max</span>
+              <input type="number" id="bfLimit" value="0" min="0" style="width:80px">
+              <span class="small sec">records (0 = no cap)</span>
+              <button id="backfillBtn">Queue backfill</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <header><h2 style="margin:0">Audio questions</h2>
+          <span class="spacer" style="flex:1"></span>
+          <span id="xpathCount" class="small muted"></span>
+        </header>
+        <p class="muted small" style="margin:2px 0 12px" id="step2Note">
+          Each recording keeps its own languages and analysis questions. Choose one to configure.</p>
+        <div id="step2"><div id="xpathList"></div></div>
+      </div>
+
+      <div class="card hidden" id="qEditor">
+        <header>
+          <h2 style="margin:0">Configuring <span class="mono" id="editXpath"></span></h2>
+          <span class="spacer" style="flex:1"></span>
+          <button class="sm" id="closeEditor">Close</button>
+        </header>
+        <div id="applyTargets" class="row" style="margin-bottom:6px"></div>
+
+        <div class="step" id="step3">
+          <div class="n">1</div>
           <div class="body">
             <h2>Languages</h2>
             <div class="grid2" style="margin-top:8px">
@@ -318,9 +358,8 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           </div>
         </div>
 
-        <!-- step 4 -->
         <div class="step" id="step4">
-          <div class="n">4</div>
+          <div class="n">2</div>
           <div class="body">
             <h2>Preset analysis questions</h2>
             <p class="muted small" style="margin:2px 0 10px">
@@ -343,51 +382,20 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           </div>
         </div>
 
-        <!-- step 5 -->
         <div class="step" id="step5">
-          <div class="n">5</div>
+          <div class="n">3</div>
           <div class="body">
             <h2>Apply to KoboToolbox</h2>
             <p class="muted small" style="margin:2px 0 10px">
-              Writes questions, languages and enabled recordings into the form's
-              <code>advanced_features</code>. Preview first if you are touching a live form.</p>
+              Writes the languages and analysis questions above to this recording,
+              and to any others ticked at the top. Preview first if you are touching
+              a live form.</p>
             <div class="row">
               <button class="primary" id="applyBtn">Save &amp; apply</button>
               <button id="previewBtn">Preview payload</button>
               <span id="applyState" class="small muted"></span>
             </div>
             <pre id="previewDump" class="hidden" style="margin-top:10px"></pre>
-          </div>
-        </div>
-
-        <!-- step 6 -->
-        <div class="step" id="step6">
-          <div class="n">6</div>
-          <div class="body">
-            <h2>Trigger</h2>
-            <p class="muted small" style="margin:2px 0 10px">
-              The interval poller always runs. A REST Service webhook makes it near-instant.</p>
-            <div id="hookArea"></div>
-            <div class="row" style="margin-top:10px">
-              <button id="hookBtn">Register webhook</button>
-              <span id="hookHint" class="small muted"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- step 7 -->
-        <div class="step" id="step7">
-          <div class="n">7</div>
-          <div class="body">
-            <h2>Process existing submissions</h2>
-            <div class="row" style="margin-top:6px">
-              <span class="small sec">Last</span>
-              <input type="number" id="bfDays" value="7" min="1" style="width:80px">
-              <span class="small sec">days, max</span>
-              <input type="number" id="bfLimit" value="0" min="0" style="width:80px">
-              <span class="small sec">records (0 = no cap)</span>
-              <button id="backfillBtn">Queue backfill</button>
-            </div>
           </div>
         </div>
       </div>
@@ -761,25 +769,32 @@ function renderSetup() {
   if (!c.media_questions.length) {
     $("#xpathList").innerHTML = `<span class="badge st-warning"><span class="dot"></span>No audio questions found on this form</span>`;
   } else if (NEW_API) {
-    if (!ACTIVE_XPATH || !c.media_questions.includes(ACTIVE_XPATH))
-      ACTIVE_XPATH = chosen.find(x => c.media_questions.includes(x)) || c.media_questions[0];
-    // Tick as many recordings as you like — applying writes the settings below
-    // to each. "Edit" swaps which one's saved configuration is loaded.
-    $("#xpathList").innerHTML = c.media_questions.map(x => `<span class="chip" style="gap:8px">
-        <label class="switch" style="gap:5px">
-          <input type="checkbox" class="xp" value="${esc(x)}" ${chosen.includes(x) ? "checked" : ""}>
-          <span class="mono">${esc(x)}</span>
-        </label>
-        ${(perQ[x] && perQ[x].configured)
-            ? `<span class="badge st-good" style="padding:0 6px"><span class="dot"></span>${(perQ[x].qual_survey||[]).length} q</span>`
-            : `<span class="badge st-idle" style="padding:0 6px"><span class="dot"></span>not set up</span>`}
-        ${x === ACTIVE_XPATH
-            ? `<span class="small sec">editing</span>`
-            : `<button class="sm xedit" data-x="${esc(x)}">Edit</button>`}
-      </span>`).join("");
-    $$("#xpathList .xedit").forEach(b => b.addEventListener("click", () => {
-      ACTIVE_XPATH = b.dataset.x;
-      renderSetup();
+    // One row per recording, showing the settings that recording actually has
+    // on the server — so differences between them are visible at a glance.
+    $("#xpathList").innerHTML = `<div class="scroll"><table>
+      <thead><tr><th>Recording</th><th>Audio language</th><th>Translations</th>
+        <th class="num">Questions</th><th class="num">AI-answered</th><th></th></tr></thead>
+      <tbody>${c.media_questions.map(x => {
+        const v = perQ[x] || {};
+        const set = v.configured;
+        return `<tr class="clickable" data-x="${esc(x)}"${x === ACTIVE_XPATH ? ' style="background:var(--accent-bg)"' : ""}>
+          <td class="mono">${esc(x)}</td>
+          <td>${set ? esc(v.transcript_language || "—")
+                    : `<span class="badge st-idle"><span class="dot"></span>not set up</span>`}</td>
+          <td class="small">${esc((v.translation_languages || []).join(", ") || "—")}</td>
+          <td class="num">${(v.qual_survey || []).length}</td>
+          <td class="num">${(v.auto_qual_uuids || []).length}</td>
+          <td><button class="sm xedit" data-x="${esc(x)}">${set ? "Configure" : "Set up"}</button></td>
+        </tr>`;
+      }).join("")}</tbody></table></div>`;
+    $("#xpathCount").textContent =
+      `${c.media_questions.filter(x => (perQ[x] || {}).configured).length} of ${c.media_questions.length} configured`;
+    $$("#xpathList [data-x]").forEach(el => el.addEventListener("click", ev => {
+      if (ev.target.tagName === "BUTTON" || el.tagName === "TR") {
+        ACTIVE_XPATH = el.dataset.x;
+        renderSetup();
+        $("#qEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
     }));
   } else {
     $("#xpathList").innerHTML = c.media_questions.map(x => `<label class="switch chip">
@@ -790,6 +805,24 @@ function renderSetup() {
     ? "Tick every recording this configuration should apply to. Each keeps its own copy on the server, so they can differ — use Edit to load one and change it on its own."
     : "Detected from the form definition. Untick any recording you do not want analysed.";
   $("#step2").classList.toggle("ok", c.media_questions.length > 0);
+
+  // The editor only exists once a recording is chosen; on the older dialects
+  // there is nothing per-recording, so it is always open.
+  const editing = !NEW_API || (ACTIVE_XPATH && c.media_questions.includes(ACTIVE_XPATH));
+  $("#qEditor").classList.toggle("hidden", !editing);
+  if (NEW_API && editing) {
+    $("#editXpath").textContent = ACTIVE_XPATH;
+    const others = c.media_questions.filter(x => x !== ACTIVE_XPATH);
+    $("#applyTargets").innerHTML = others.length
+      ? `<span class="small sec">Also apply to:</span>` + others.map(x =>
+          `<label class="switch chip small"><input type="checkbox" class="xp" value="${esc(x)}">
+             <span class="mono">${esc(x)}</span></label>`).join("")
+        + `<span class="small muted">their own extra questions are kept</span>`
+      : "";
+  } else if (NEW_API) {
+    $("#editXpath").textContent = "";
+    $("#applyTargets").innerHTML = "";
+  }
 
   // step 3 — languages. On the current API these live on the server, per
   // recording, so show what it actually holds rather than our defaults.
@@ -935,7 +968,14 @@ $("#loadTemplate").addEventListener("click", () => {
     added.length ? "" : "err");
 });
 
-function pickedXpaths() { return $$(".xp").filter(c => c.checked).map(c => c.value); }
+function pickedXpaths() {
+  const ticked = $$(".xp").filter(c => c.checked).map(c => c.value);
+  // On the current API the recording being edited is always a target; the
+  // checkboxes are the *additional* ones to copy the same settings to.
+  if (CUR && CUR.detected_dialect === "supplement")
+    return ACTIVE_XPATH ? [ACTIVE_XPATH, ...ticked.filter(x => x !== ACTIVE_XPATH)] : [];
+  return ticked;
+}
 function langList(v) { return v.split(",").map(s => s.trim()).filter(Boolean); }
 
 function currentConfig() {
@@ -990,6 +1030,10 @@ async function applySetup(dryRun) {
   } catch (e) { toast(e.message, "err"); }
   finally { btn.disabled = false; }
 }
+$("#closeEditor").addEventListener("click", () => {
+  ACTIVE_XPATH = null;
+  renderSetup();
+});
 $("#applyBtn").addEventListener("click", () => applySetup(false));
 $("#previewBtn").addEventListener("click", () => applySetup(true));
 
