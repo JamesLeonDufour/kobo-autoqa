@@ -50,35 +50,37 @@ async def main():
     fails += not ok("wrong password rejected", not U.verify_password("nope", h))
     fails += not ok("hash is salted", h != U.hash_password("correct horse battery"))
     fails += not ok("short passwords refused", bool(U.password_problem("short")))
+    fails += not ok("bad usernames refused", bool(U.username_problem("a b")))
+    fails += not ok("good usernames accepted", not U.username_problem("james.l-1"))
 
     print("\n[registration]")
     async with client() as a:
         r = await a.post("/admin/api/register", json={
-            "email": "first@example.org", "password": "first-account-pw"})
+            "username": "firstuser", "password": "first-account-pw"})
         body = r.json()
         fails += not ok("first account signs straight in", body.get("signed_in") is True, body)
         fails += not ok("first account is an admin",
                         body["user"]["is_admin"] and body["user"]["status"] == "active")
 
         r = await a.post("/admin/api/register", json={
-            "email": "first@example.org", "password": "another-password"})
-        fails += not ok("duplicate email refused", r.status_code == 400)
+            "username": "firstuser", "password": "another-password-x"})
+        fails += not ok("duplicate username refused", r.status_code == 400)
 
     async with client() as b:
         r = await b.post("/admin/api/register", json={
-            "email": "second@example.org", "password": "second-account-pw"})
+            "username": "seconduser", "password": "second-account-pw"})
         fails += not ok("later accounts need approval", r.json().get("signed_in") is False)
         r = await b.post("/admin/api/login", json={
-            "email": "second@example.org", "password": "second-account-pw"})
+            "username": "seconduser", "password": "second-account-pw"})
         fails += not ok("pending account cannot sign in", r.status_code == 401)
         fails += not ok("and is told why", "approve" in r.json()["detail"].lower(),
                         r.json()["detail"])
 
     print("\n[approval]")
     store = make_store(settings)
-    second = store.get_user_by_email("second@example.org")
+    second = store.get_user_by_username("seconduser")
     async with client() as a:
-        await a.post("/admin/api/login", json={"email": "first@example.org",
+        await a.post("/admin/api/login", json={"username": "firstuser",
                                                "password": "first-account-pw"})
         r = await a.get("/admin/api/users")
         fails += not ok("admin sees both accounts", len(r.json()["results"]) == 2)
@@ -86,7 +88,7 @@ async def main():
         fails += not ok("admin can approve", r.status_code == 200, r.text[:120])
 
     async with client() as b:
-        r = await b.post("/admin/api/login", json={"email": "second@example.org",
+        r = await b.post("/admin/api/login", json={"username": "seconduser",
                                                    "password": "second-account-pw"})
         fails += not ok("approved account can sign in", r.status_code == 200)
         r = await b.get("/admin/api/users")
@@ -94,9 +96,9 @@ async def main():
 
     print("\n[isolation]")
     async with client() as a, client() as b:
-        await a.post("/admin/api/login", json={"email": "first@example.org",
+        await a.post("/admin/api/login", json={"username": "firstuser",
                                                "password": "first-account-pw"})
-        await b.post("/admin/api/login", json={"email": "second@example.org",
+        await b.post("/admin/api/login", json={"username": "seconduser",
                                                "password": "second-account-pw"})
         await a.put("/admin/api/credentials", json={
             "kobo_url": MOCK, "kobo_token": "token-of-account-one"})
@@ -133,7 +135,7 @@ async def main():
         fails += not ok("one account cannot delete another's job", still == 3, still)
 
     print("\n[webhook routing]")
-    first = store.get_user_by_email("first@example.org")
+    first = store.get_user_by_username("firstuser")
     async with client() as raw:
         r = await raw.post(f"/kobo/hook/{first['id']}/aMOCK1234567890abcdef",
                            json={"_uuid": "routed-to-first"})
@@ -149,7 +151,7 @@ async def main():
 
     print("\n[password change ends sessions]")
     async with client() as a:
-        await a.post("/admin/api/login", json={"email": "first@example.org",
+        await a.post("/admin/api/login", json={"username": "firstuser",
                                                "password": "first-account-pw"})
         r = await a.post("/admin/api/me/password",
                          json={"current": "wrong", "new": "a-brand-new-password"})

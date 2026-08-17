@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
     name          TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'pending',
@@ -110,6 +110,12 @@ class Store:
         """
         existing = {r["name"] for r in
                     c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        # Accounts were briefly keyed on an email address.
+        if "users" in existing:
+            ucols = [r["name"] for r in c.execute("PRAGMA table_info(users)")]
+            if "email" in ucols and "username" not in ucols:
+                c.execute("ALTER TABLE users RENAME COLUMN email TO username")
+                log.info("Renamed users.email to users.username")
         for table in OWNED_TABLES:
             if table not in existing:
                 continue
@@ -336,21 +342,21 @@ class Store:
         with self._conn() as c:
             return c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
 
-    def create_user(self, *, email: str, name: str, password_hash: str,
+    def create_user(self, *, username: str, name: str, password_hash: str,
                     status: str, is_admin: bool) -> int:
         now = time.time()
         with self._lock, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO users (email, name, password_hash, status, is_admin,"
+                "INSERT INTO users (username, name, password_hash, status, is_admin,"
                 " created_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (email, name, password_hash, status, int(is_admin), now,
+                (username, name, password_hash, status, int(is_admin), now,
                  now if status == "active" else None),
             )
             return int(cur.lastrowid)
 
-    def get_user_by_email(self, email: str) -> dict | None:
+    def get_user_by_username(self, username: str) -> dict | None:
         with self._conn() as c:
-            row = c.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            row = c.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         return dict(row) if row else None
 
     def get_user_by_id(self, user_id: int) -> dict | None:

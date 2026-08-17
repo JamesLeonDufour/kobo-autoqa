@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import logging
 import os
 import secrets
@@ -103,38 +104,46 @@ def _user_key(store, user: dict) -> bytes:
 # ---------------------------------------------------------------------------
 # registration / sign-in
 # ---------------------------------------------------------------------------
-def register(store, email: str, password: str, name: str = "") -> dict:
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
+
+
+def username_problem(username: str) -> str | None:
+    if not USERNAME_RE.match(username or ""):
+        return ("Username must be 3-32 characters, using letters, digits, "
+                "dot, dash or underscore.")
+    return None
+
+
+def register(store, username: str, password: str, name: str = "") -> dict:
     """Create an account. The first one is an active admin, the rest pending."""
-    email = (email or "").strip().lower()
-    if "@" not in email or len(email) < 5:
-        raise ValueError("Enter a valid email address.")
-    problem = password_problem(password or "")
+    username = (username or "").strip()
+    problem = username_problem(username) or password_problem(password or "")
     if problem:
         raise ValueError(problem)
-    if store.get_user_by_email(email):
-        raise ValueError("An account with that email already exists.")
+    if store.get_user_by_username(username):
+        raise ValueError("That username is already taken.")
 
     first = store.count_users() == 0
     user_id = store.create_user(
-        email=email, name=(name or "").strip(),
+        username=username, name=(name or "").strip(),
         password_hash=hash_password(password),
         status=STATUS_ACTIVE if first else STATUS_PENDING,
         is_admin=first,
     )
-    log.info("Registered %s (%s)", email, "admin" if first else "pending approval")
+    log.info("Registered %s (%s)", username, "admin" if first else "pending approval")
     return store.get_user_by_id(user_id)
 
 
-def authenticate(store, email: str, password: str) -> dict:
+def authenticate(store, username: str, password: str) -> dict:
     """Return the user, or raise ValueError explaining why not."""
-    user = store.get_user_by_email((email or "").strip().lower())
+    user = store.get_user_by_username((username or "").strip())
     # Hash anyway when the account is unknown, so a missing account and a wrong
     # password take about the same time and cannot be told apart.
     if not user:
         hash_password(password or "")
-        raise ValueError("Email or password is incorrect.")
+        raise ValueError("Username or password is incorrect.")
     if not verify_password(password or "", user["password_hash"]):
-        raise ValueError("Email or password is incorrect.")
+        raise ValueError("Username or password is incorrect.")
     if user["status"] == STATUS_PENDING:
         raise ValueError("Your account is waiting for an administrator to approve it.")
     if user["status"] == STATUS_DISABLED:
@@ -145,7 +154,7 @@ def authenticate(store, email: str, password: str) -> dict:
 
 def public_view(user: dict) -> dict:
     return {
-        "id": user["id"], "email": user["email"], "name": user["name"],
+        "id": user["id"], "username": user["username"], "name": user["name"],
         "status": user["status"], "is_admin": bool(user["is_admin"]),
         "created_at": user["created_at"], "last_login_at": user["last_login_at"],
     }

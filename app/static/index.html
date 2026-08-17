@@ -212,8 +212,9 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
     <form id="loginForm">
       <label class="field" id="nameField" style="display:none"><span>Your name</span>
         <input type="text" id="loginName" autocomplete="name"></label>
-      <label class="field"><span>Email</span>
-        <input type="text" id="loginEmail" autocomplete="username" inputmode="email"></label>
+      <label class="field"><span>Username</span>
+        <input type="text" id="loginUser" autocomplete="off" autocapitalize="none"
+               spellcheck="false" placeholder="leave blank for the .env password"></label>
       <label class="field"><span>Password</span>
         <input type="password" id="pw" autocomplete="current-password" required></label>
       <button class="primary" type="submit" style="width:100%" id="loginSubmit">Sign in</button>
@@ -225,7 +226,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
       <span id="firstHint" class="hidden"> — the first account becomes the administrator.</span>
     </p>
     <p class="small muted" style="margin:8px 0 0" id="envHint">
-      Leave the email blank to sign in with the <code>ADMIN_PASSWORD</code> from <code>.env</code>.
+      Leave the username blank to sign in with the <code>ADMIN_PASSWORD</code> from <code>.env</code>.
     </p>
   </div>
 </div>
@@ -431,7 +432,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
       </p>
       <div class="scroll">
         <table>
-          <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Role</th>
+          <thead><tr><th>Username</th><th>Name</th><th>Status</th><th>Role</th>
             <th>Last sign-in</th><th></th></tr></thead>
           <tbody id="userRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
         </table>
@@ -639,7 +640,7 @@ $("#toggleMode").addEventListener("click", async e => {
 
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
-  const body = { email: $("#loginEmail").value.trim(), password: $("#pw").value };
+  const body = { username: $("#loginUser").value.trim(), password: $("#pw").value };
   $("#loginErr").classList.add("hidden");
   $("#loginOk").classList.add("hidden");
   try {
@@ -682,7 +683,7 @@ async function loadUsers() {
     const badge = { active: "st-good", pending: "st-warning", disabled: "st-idle" }[u.status];
     const self = ME && ME.id === u.id;
     return `<tr data-id="${u.id}">
-      <td>${esc(u.email)}${self ? ` <span class="small muted">(you)</span>` : ""}</td>
+      <td>${esc(u.username)}${self ? ` <span class="small muted">(you)</span>` : ""}</td>
       <td class="small">${esc(u.name || "—")}</td>
       <td><span class="badge ${badge}"><span class="dot"></span>${u.status}</span></td>
       <td class="small">${u.is_admin ? "administrator" : "member"}</td>
@@ -1336,7 +1337,7 @@ async function boot() {
   ME = ENV.user || null;
   showApp();
   $("#usersTab").classList.toggle("hidden", !(ME && ME.is_admin));
-  $("#whoami").textContent = ME ? (ME.email || "") : "";
+  $("#whoami").textContent = ME ? (ME.username || "") : "";
   $("#dryBadge").classList.toggle("hidden", !ENV.dry_run);
   if (ENV.dry_run) $("#dryBadge").className = "badge st-warning";
 

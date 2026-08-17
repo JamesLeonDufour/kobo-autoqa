@@ -90,7 +90,7 @@ def session() -> dict:
 def register(response: Response, payload: dict = Body(...)) -> dict:
     s = base_store()
     try:
-        user = U.register(s, payload.get("email", ""), payload.get("password", ""),
+        user = U.register(s, payload.get("username", ""), payload.get("password", ""),
                           payload.get("name", ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -111,27 +111,34 @@ def register(response: Response, payload: dict = Body(...)) -> dict:
 @router.post("/login")
 def login(response: Response, payload: dict = Body(...)) -> dict:
     s = base_store()
-    email = (payload.get("email") or "").strip()
+    username = (payload.get("username") or payload.get("email") or "").strip()
     password = str(payload.get("password", ""))
 
-    # No email means the .env break-glass login.
-    if not email:
-        if not settings.admin_password:
-            raise HTTPException(status_code=503, detail="ADMIN_PASSWORD is not set")
-        if not check_env_password(password):
-            raise HTTPException(status_code=401, detail="Wrong password")
+    account_error: str | None = None
+    if username:
+        try:
+            user = U.authenticate(s, username, password)
+        except ValueError as exc:
+            account_error = str(exc)
+        else:
+            token, ttl = issue_for_user(user)
+            _set_cookie(response, token, ttl)
+            return {"ok": True, "via": "account", "user": U.public_view(user)}
+
+    # Fall back to the .env break-glass password. This is tried even when a
+    # username was supplied, because browsers autofill that field and a stale
+    # saved value must not be able to lock the owner out.
+    if settings.admin_password and check_env_password(password):
         token, ttl = U.issue_env_token(settings.admin_password,
                                        settings.admin_session_hours)
         _set_cookie(response, token, ttl)
         return {"ok": True, "via": "env"}
 
-    try:
-        user = U.authenticate(s, email, password)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    token, ttl = issue_for_user(user)
-    _set_cookie(response, token, ttl)
-    return {"ok": True, "via": "account", "user": U.public_view(user)}
+    if account_error:
+        raise HTTPException(status_code=401, detail=account_error)
+    if not settings.admin_password:
+        raise HTTPException(status_code=503, detail="ADMIN_PASSWORD is not set")
+    raise HTTPException(status_code=401, detail="Username or password is incorrect.")
 
 
 def _set_cookie(response: Response, token: str, ttl: int) -> None:

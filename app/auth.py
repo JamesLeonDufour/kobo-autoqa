@@ -59,7 +59,7 @@ def current_user(request: Request) -> dict:
             raise HTTPException(status_code=401, detail="not authenticated")
         admin = next((u for u in s.list_users() if u["is_admin"]), None)
         return admin or {
-            "id": OWNER_SENTINEL, "email": ".env owner", "name": "",
+            "id": OWNER_SENTINEL, "username": ".env owner", "name": "",
             "status": "active", "is_admin": 1, "password_hash": "",
             "created_at": 0, "last_login_at": None,
         }
