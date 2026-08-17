@@ -21,6 +21,7 @@ each wrapping a `_data` object carrying `status` and (when complete) `value`.
 from __future__ import annotations
 
 import logging
+import uuid as uuid_lib
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,18 @@ CHOICE_TYPES = {"qualSelectOne", "qualSelectMultiple"}
 QUAL_TYPES = CHOICE_TYPES | {
     "qualText", "qualInteger", "qualTags", "qualNote", "qualAutoKeywordCount",
 }
+
+# Types the model can actually answer. The configuration endpoint happily
+# stores any of them under automatic_bedrock_qual, but the trigger then
+# rejects the ones that are not answerable:
+#
+#   qualTags            -> 400 "Invalid qualitative analysis question uuid"
+#   qualNote            -> a heading for human coders, nothing to answer
+#   qualAutoKeywordCount-> computed by the server, not by the model
+#
+# Verified against a live server: text, select-one, select-multiple and
+# integer are accepted; tags are refused.
+AUTO_QUAL_TYPES = CHOICE_TYPES | {"qualText", "qualInteger"}
 
 STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETE = "complete"
@@ -95,14 +108,62 @@ def qual_definitions(questions: list[dict]) -> list[dict]:
     return [qual_definition(q) for q in questions if q.get("uuid")]
 
 
-def auto_qual_params(questions: list[dict]) -> list[dict]:
-    """Which questions the AI should answer: everything except notes.
+def _match_existing(question: dict, existing: list[dict]) -> dict | None:
+    """Find the same question among a recording's current definitions.
 
-    A qualNote is a heading shown to human coders, so asking Bedrock to answer
-    one is meaningless.
+    By uuid first -- that is the recording being edited. Falling back to
+    type + label matters when the same set is applied to a *second* recording:
+    without it, every apply would mint new uuids and pile up duplicates.
+    """
+    by_uuid = {e.get("uuid"): e for e in existing}
+    if question.get("uuid") in by_uuid:
+        return by_uuid[question["uuid"]]
+    label = _labels(question.get("labels") or question.get("label")).get("_default")
+    for e in existing:
+        if e.get("type") == question.get("type") and \
+                (e.get("labels") or {}).get("_default") == label:
+            return e
+    return None
+
+
+def localise_questions(questions: list[dict], existing: list[dict]) -> list[dict]:
+    """Resolve a question set against one recording's existing configuration.
+
+    Analysis answers are stored per recording under the question's uuid, so two
+    recordings must not share uuids even when they ask the same thing. Each
+    recording therefore keeps its own, reused when the question is already
+    there and minted when it is not.
+    """
+    out: list[dict] = []
+    for question in questions:
+        match = _match_existing(question, existing)
+        resolved = dict(question)
+        resolved["uuid"] = (match or {}).get("uuid") or str(uuid_lib.uuid4())
+
+        if question.get("choices"):
+            old_choices = (match or {}).get("choices") or []
+            by_label = {(c.get("labels") or {}).get("_default"): c for c in old_choices}
+            by_uuid = {c.get("uuid"): c for c in old_choices}
+            choices = []
+            for choice in question["choices"]:
+                label = _labels(choice.get("labels") or choice.get("label")).get("_default")
+                prior = by_uuid.get(choice.get("uuid")) or by_label.get(label)
+                choices.append({**choice,
+                                "uuid": (prior or {}).get("uuid") or str(uuid_lib.uuid4())})
+            resolved["choices"] = choices
+        out.append(resolved)
+    return out
+
+
+def auto_qual_params(questions: list[dict]) -> list[dict]:
+    """Which questions the AI should answer -- see AUTO_QUAL_TYPES.
+
+    Listing an unanswerable type here is accepted by the configuration
+    endpoint and only fails later, once per submission, when the pipeline
+    tries to trigger it. So it has to be filtered at write time.
     """
     return [{"uuid": q["uuid"]} for q in questions
-            if q.get("uuid") and q.get("type") != "qualNote"]
+            if q.get("uuid") and q.get("type") in AUTO_QUAL_TYPES]
 
 
 class AssetFeatures:
@@ -145,6 +206,29 @@ class AssetFeatures:
     @property
     def xpaths(self) -> list[str]:
         return sorted(set(self.transcribe) | set(self.translate) | set(self.qual))
+
+    def question_type(self, xpath: str, question_uuid: str) -> str | None:
+        for q in self.definitions.get(xpath, []):
+            if q.get("uuid") == question_uuid:
+                return q.get("type")
+        return None
+
+    def answerable_qual(self, xpath: str) -> list[str]:
+        """Auto-answer uuids the model can actually handle.
+
+        A configuration written before this filter existed -- or by hand -- can
+        list a qualTags question here, which fails on every submission forever.
+        Skipping it locally keeps those submissions moving.
+        """
+        out = []
+        for question_uuid in self.qual.get(xpath, []):
+            qtype = self.question_type(xpath, question_uuid)
+            if qtype is None or qtype in AUTO_QUAL_TYPES:
+                out.append(question_uuid)
+            else:
+                log.warning("Skipping %s question %s on %s: not auto-answerable",
+                            qtype, question_uuid[:8], xpath)
+        return out
 
     def row_uid(self, xpath: str, action: str) -> str | None:
         for row in self.rows:
@@ -284,12 +368,13 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
                   transcribe_language: str = "",
                   translate_languages: list[str] | None = None,
                   questions: list[dict] | None = None,
-                  enable_qual: bool = True) -> None:
-    """Apply a full configuration for one audio question.
+                  enable_qual: bool = True, merge: bool = False) -> list[dict]:
+    """Apply a full configuration to one audio question.
 
     Everything here is scoped to a single `question_xpath` because that is how
     the server models it: analysis questions belong to one audio question, not
-    to the form. Configuring a second recording means calling this again.
+    to the form. Returns the questions as stored for this recording, whose
+    uuids are its own.
     """
     if transcribe_language:
         language, _ = split_language(transcribe_language)
@@ -301,10 +386,22 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
                 [{"language": split_language(l)[0]} for l in translate_languages])
 
     if questions is not None:
+        existing = features.definitions.get(xpath, [])
+        # Resolve uuids against this recording so the same set can be applied
+        # to several without them sharing uuids or duplicating on re-apply.
+        local = localise_questions(questions, existing)
+        if merge:
+            # This recording is not the one being edited, so keep questions it
+            # has of its own; a deletion in the editor must not silently strip
+            # them from every other recording.
+            incoming = {q["uuid"] for q in local}
+            local = local + [q for q in existing if q.get("uuid") not in incoming]
         put_row(client, asset_uid, features, xpath, ACTION_QUAL_DEFS,
-                qual_definitions(questions))
+                qual_definitions(local))
         put_row(client, asset_uid, features, xpath, ACTION_QUAL,
-                auto_qual_params(questions) if enable_qual else [])
+                auto_qual_params(local) if enable_qual else [])
+        return local
+    return list(questions or [])
 
 
 def accept_transcript_body(xpath: str, language_code: str) -> dict:

@@ -231,10 +231,10 @@ class Pipeline:
         if not ctx.cfg.enable_qual:
             return STAGE_DONE, 0.0
         pending = False
-        for xpath, question_uuids in (ctx.features.qual if ctx.features else {}).items():
+        for xpath in (ctx.features.qual if ctx.features else {}):
             if not S.transcript_accepted(sup, xpath):
                 continue
-            for question_uuid in question_uuids:
+            for question_uuid in ctx.features.answerable_qual(xpath):
                 status = S.qual_state(sup, xpath, question_uuid)
                 if S.is_done(status):
                     continue

@@ -315,40 +315,56 @@ def _save_qual_supplement(c, asset_uid: str, features: S.AssetFeatures,
                           payload: dict, survey: list[dict]) -> dict:
     """Write one audio question's configuration through the current API."""
     xpaths = payload.get("xpaths") or []
-    if len(xpaths) != 1:
-        raise HTTPException(
-            status_code=400,
-            detail="This server stores analysis questions per audio question. "
-                   "Select exactly one recording to configure.",
-        )
-    xpath = xpaths[0]
+    if not xpaths:
+        raise HTTPException(status_code=400,
+                            detail="Select at least one audio question to configure.")
 
     try:
         definitions = S.qual_definitions(survey)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    skipped = [q["labels"]["_default"] for q in definitions
+               if q["type"] not in S.AUTO_QUAL_TYPES]
+
     if payload.get("dry_run"):
-        return {"ok": True, "dry_run": True, "xpath": xpath,
+        return {"ok": True, "dry_run": True, "xpaths": xpaths,
                 "manual_qual": definitions,
-                "automatic_bedrock_qual": S.auto_qual_params(survey)}
+                "automatic_bedrock_qual": S.auto_qual_params(survey),
+                "not_auto_answerable": skipped}
 
+    # Each recording gets its own copy: analysis answers are stored per
+    # recording under the question uuid, so they must not be shared.
+    # The recording open in the editor is replaced outright, so removing a
+    # question there takes effect. The others are merged into, so applying to
+    # several never strips questions that belong to only one of them.
+    edited = payload.get("edit_xpath") or xpaths[0]
+    stored: dict[str, list[dict]] = {}
     try:
-        S.sync_question(
-            c, asset_uid, features, xpath,
-            transcribe_language=payload.get("transcript_language") or "",
-            translate_languages=payload.get("translation_languages") or [],
-            questions=survey,
-            enable_qual=payload.get("enable_qual", True),
-        )
-        refreshed = S.AssetFeatures(c.list_advanced_features(asset_uid))
+        for xpath in xpaths:
+            stored[xpath] = S.sync_question(
+                c, asset_uid, features, xpath,
+                transcribe_language=payload.get("transcript_language") or "",
+                translate_languages=payload.get("translation_languages") or [],
+                questions=survey,
+                enable_qual=payload.get("enable_qual", True),
+                merge=(xpath != edited),
+            )
+            # Re-read so the next recording sees the rows just written.
+            features = S.AssetFeatures(c.list_advanced_features(asset_uid))
     except KoboError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Applied {len(stored)} of {len(xpaths)} recordings, then: {exc}",
+        ) from exc
 
-    return {"ok": True, "xpath": xpath, "qual_survey": refreshed.definitions.get(xpath, []),
-            "auto_qual_uuids": refreshed.qual.get(xpath, []),
-            "transcript_language": refreshed.transcribe.get(xpath, ""),
-            "translation_languages": refreshed.translate.get(xpath, [])}
+    first = xpaths[0]
+    return {"ok": True, "xpaths": xpaths, "xpath": first,
+            "qual_survey": features.definitions.get(first, []),
+            "auto_qual_uuids": features.qual.get(first, []),
+            "transcript_language": features.transcribe.get(first, ""),
+            "translation_languages": features.translate.get(first, []),
+            "not_auto_answerable": skipped}
 
 
 @guarded.put("/assets/{asset_uid}/qual")

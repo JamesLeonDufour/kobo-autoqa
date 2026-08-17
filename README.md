@@ -100,17 +100,20 @@ saving — no restart, no `docker compose` command.
 
 The Setup wizard steps:
 
-1. **Server capability check** — reads `advanced_submission_schema` live and shows
-   the detected payload dialect. Override it if auto-detection is wrong.
-2. **Audio questions** — auto-detected from the form definition; untick any
-   recording you do not want processed.
-3. **Languages** — source language, translation targets, which text AutoQA reads.
+1. **Server capability check** — detects which NLP API the server speaks and
+   shows the dialect. Override it if auto-detection is wrong.
+2. **Audio questions** — auto-detected from the form definition. Tick every
+   recording to configure; on the current API each keeps its own settings, and
+   **Edit** loads one to change on its own.
+3. **Languages** — source language and translation targets. On the current API
+   these are read from, and written back to, the server per recording.
 4. **Preset analysis questions** — a visual builder for the qual survey (free
-   text, select one/multiple, tags, integer, note) with choice editing. A
-   humanitarian starter template is one click away. UUIDs are generated once and
-   then held stable, so re-applying never duplicates columns.
-5. **Apply** — writes it all into the form's `advanced_features`. "Preview
-   payload" shows the exact JSON first.
+   text, select one/multiple, tags, integer, note) with choices and hints. It
+   loads the recording's existing questions first, so you add to what is really
+   there; the starter template fills in only what is missing. UUIDs are held
+   stable per recording, so re-applying never duplicates columns.
+5. **Apply** — writes the configuration to KoboToolbox. "Preview payload" shows
+   the exact JSON first.
 6. **Trigger** — registers the Kobo REST Service webhook with the shared-secret
    header, and shows its success/failure counts.
 7. **Backfill** — queue existing submissions.
@@ -384,7 +387,7 @@ reject fails here too.
 pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
 python tests/test_admin_flow.py                # 40 assertions, all should PASS
-python tests/test_supplement_flow.py           # 23 assertions, current NLP API
+python tests/test_supplement_flow.py           # 33 assertions, current NLP API
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \
@@ -467,8 +470,35 @@ the ones that are easy to miss when reading the schema alone.
 
 On this dialect a configuration row is keyed on `(question_xpath, action)`, so
 **analysis questions belong to one recording, not to the form**. A form with
-two audio questions needs two sets of rows, and the Setup tab reflects that:
-you pick one recording, configure it, apply, then pick the next.
+three audio questions needs three sets of rows.
+
+The Setup tab handles as many as you have: tick every recording the
+configuration should apply to and apply once. Each gets its own copy, so they
+can also differ — use **Edit** on a recording to load its saved configuration
+and change it independently.
+
+Question uuids are minted **per recording**, never shared, because analysis
+answers are stored per recording under the question uuid. Re-applying is
+stable: a question already on a recording keeps its uuid (matched by uuid, then
+by type and label), so editing a set and applying it again does not orphan
+existing answers or pile up duplicates.
+
+Applying to several recordings at once treats them differently on purpose:
+
+- the recording open in the editor is **replaced**, so deleting a question
+  there actually removes it;
+- the others are **merged into** — the applied questions are added or updated,
+  and anything they have of their own is left alone.
+
+Without that split, ticking a second recording would quietly strip whatever
+questions belonged only to it.
+
+The Setup tab loads the recording's current questions from the server before
+you edit, so you are always adding to what is really there. **Load humanitarian
+template** adds only the template questions that are missing and reports how
+many it skipped, rather than overwriting your set. Two questions with the same
+type and wording are flagged in the editor, since they would otherwise become
+two near-identical columns in every export.
 
 Four actions matter:
 
@@ -480,9 +510,31 @@ Four actions matter:
 | `automatic_bedrock_qual` | which of those question uuids the AI should answer |
 
 Note the split in the last two: `manual_qual` defines the questions,
-`automatic_bedrock_qual` selects which get answered automatically. Questions of
-type `qualNote` are headings for human coders, so the pipeline defines them but
-never asks the model to answer one.
+`automatic_bedrock_qual` selects which get answered automatically.
+
+**Not every question type can be answered automatically**, and this is a sharp
+edge: the configuration endpoint accepts any type under
+`automatic_bedrock_qual`, and only the *trigger* rejects it — once per
+submission, forever.
+
+| Type | Answered by the model |
+|---|---|
+| `qualText`, `qualSelectOne`, `qualSelectMultiple`, `qualInteger` | yes |
+| `qualTags` | **no** — `400 "Invalid qualitative analysis question uuid"` |
+| `qualNote` | no — a heading for human coders |
+| `qualAutoKeywordCount` | no — computed by the server |
+
+The pipeline filters these out when writing a configuration, and also skips
+them at trigger time, so a configuration written by hand or by an older version
+degrades to a warning rather than parking every submission:
+
+```
+WARNING app.supplement: Skipping qualTags question 0ae66c93 on main_impacts:
+        not auto-answerable
+```
+
+Those questions are still defined on the form and still collectable by a human
+coder — they just are not sent to the model.
 
 Questions and individual choices can carry a **hint**, which is extra guidance
 passed to the model (`{"hint": {"labels": {"_default": "1 is lowest, 5 is best"}}}`).

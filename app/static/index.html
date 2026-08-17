@@ -763,13 +763,22 @@ function renderSetup() {
   } else if (NEW_API) {
     if (!ACTIVE_XPATH || !c.media_questions.includes(ACTIVE_XPATH))
       ACTIVE_XPATH = chosen.find(x => c.media_questions.includes(x)) || c.media_questions[0];
-    $("#xpathList").innerHTML = c.media_questions.map(x => `<label class="switch chip">
-        <input type="radio" name="xp" class="xp" value="${esc(x)}" ${x === ACTIVE_XPATH ? "checked" : ""}>
-        <span class="mono">${esc(x)}</span>
-        ${(perQ[x] && perQ[x].configured) ? `<span class="badge st-good" style="padding:0 6px"><span class="dot"></span>set up</span>` : ""}
-      </label>`).join("");
-    $$(".xp").forEach(r => r.addEventListener("change", () => {
-      ACTIVE_XPATH = r.value;
+    // Tick as many recordings as you like — applying writes the settings below
+    // to each. "Edit" swaps which one's saved configuration is loaded.
+    $("#xpathList").innerHTML = c.media_questions.map(x => `<span class="chip" style="gap:8px">
+        <label class="switch" style="gap:5px">
+          <input type="checkbox" class="xp" value="${esc(x)}" ${chosen.includes(x) ? "checked" : ""}>
+          <span class="mono">${esc(x)}</span>
+        </label>
+        ${(perQ[x] && perQ[x].configured)
+            ? `<span class="badge st-good" style="padding:0 6px"><span class="dot"></span>${(perQ[x].qual_survey||[]).length} q</span>`
+            : `<span class="badge st-idle" style="padding:0 6px"><span class="dot"></span>not set up</span>`}
+        ${x === ACTIVE_XPATH
+            ? `<span class="small sec">editing</span>`
+            : `<button class="sm xedit" data-x="${esc(x)}">Edit</button>`}
+      </span>`).join("");
+    $$("#xpathList .xedit").forEach(b => b.addEventListener("click", () => {
+      ACTIVE_XPATH = b.dataset.x;
       renderSetup();
     }));
   } else {
@@ -778,7 +787,7 @@ function renderSetup() {
         <span class="mono">${esc(x)}</span></label>`).join("");
   }
   $("#step2Note").textContent = NEW_API
-    ? "This server stores a configuration per recording, so pick one. Languages and analysis questions below apply to it alone — configure a second recording by selecting it and applying again."
+    ? "Tick every recording this configuration should apply to. Each keeps its own copy on the server, so they can differ — use Edit to load one and change it on its own."
     : "Detected from the form definition. Untick any recording you do not want analysed.";
   $("#step2").classList.toggle("ok", c.media_questions.length > 0);
 
@@ -817,7 +826,13 @@ function hintText(q) {
 }
 
 function renderQual() {
+  // Two questions with the same wording produce two near-identical columns in
+  // every export, so flag them before they reach the server.
+  const seen = {};
+  QUAL.forEach(q => { const k = qKey(q); seen[k] = (seen[k] || 0) + 1; });
+
   $("#qualList").innerHTML = QUAL.map((q, i) => {
+    const dup = qLabel(q) && seen[qKey(q)] > 1;
     const isSel = q.type === "qualSelectOne" || q.type === "qualSelectMultiple";
     const label = (q.labels && q.labels._default) || q.label || "";
     return `<div class="qq" data-i="${i}">
@@ -831,6 +846,9 @@ function renderQual() {
         <input type="text" class="qlabel" value="${esc(label)}" placeholder="Question put to the model…">
         <button class="sm danger qdel" title="Remove">✕</button>
       </div>
+      ${dup ? `<p class="small" style="margin:6px 0 0;color:var(--critical)">Duplicate — another question has the same type and wording.</p>` : ""}
+      ${(q.type === "qualTags" || q.type === "qualNote" || q.type === "qualAutoKeywordCount")
+        ? `<p class="small muted" style="margin:6px 0 0">Stored for human coding — the model cannot answer this type automatically.</p>` : ""}
       <input type="text" class="qhint" value="${esc(hintText(q))}"
              placeholder="Hint — extra guidance for the model, e.g. “1 is lowest, 5 is best”"
              style="margin-top:6px">
@@ -881,28 +899,37 @@ $("#addQual").addEventListener("click", () => {
               choices: (t==="qualSelectOne"||t==="qualSelectMultiple") ? [] : [] });
   renderQual();
 });
+const TEMPLATE = [
+  { type:"qualText", labels:{_default:"Summarise the respondent's main concern in two sentences."}, choices:[] },
+  { type:"qualSelectOne", labels:{_default:"Overall sentiment of the response"},
+    choices:[{uuid:"",labels:{_default:"Positive"}},{uuid:"",labels:{_default:"Neutral"}},{uuid:"",labels:{_default:"Negative"}}] },
+  { type:"qualSelectMultiple", labels:{_default:"Which needs are mentioned?"},
+    choices:["Food","Shelter","Health","WASH","Protection","Education","Livelihoods"]
+      .map(l => ({uuid:"",labels:{_default:l}})) },
+  { type:"qualTags", labels:{_default:"Key themes raised (free tags)"}, choices:[] },
+  { type:"qualInteger", labels:{_default:"Urgency on a 1-5 scale, where 5 is life-threatening."}, choices:[] },
+];
+
+const qLabel = q => ((q.labels && q.labels._default) || q.label || "").trim().toLowerCase();
+const qKey   = q => q.type + " " + qLabel(q);
+
+// Add template questions alongside whatever the recording already has, rather
+// than replacing them — the editor is loaded with the server's current set, so
+// overwriting would silently drop questions that already have answers.
 $("#loadTemplate").addEventListener("click", () => {
-  QUAL = [
-    { type:"qualText", labels:{_default:"Summarise the respondent's main concern in two sentences."}, choices:[] },
-    { type:"qualSelectOne", labels:{_default:"Overall sentiment of the response"},
-      choices:[{uuid:"",labels:{_default:"Positive"}},{uuid:"",labels:{_default:"Neutral"}},{uuid:"",labels:{_default:"Negative"}}] },
-    { type:"qualSelectMultiple", labels:{_default:"Which needs are mentioned?"},
-      choices:["Food","Shelter","Health","WASH","Protection","Education","Livelihoods"]
-        .map(l => ({uuid:"",labels:{_default:l}})) },
-    { type:"qualTags", labels:{_default:"Key themes raised (free tags)"}, choices:[] },
-    { type:"qualInteger", labels:{_default:"Urgency on a 1-5 scale, where 5 is life-threatening."}, choices:[] },
-  ];
+  const have = new Set(QUAL.map(qKey));
+  const added = TEMPLATE.filter(q => !have.has(qKey(q)));
+  const skipped = TEMPLATE.length - added.length;
+  QUAL = QUAL.concat(JSON.parse(JSON.stringify(added)));
   renderQual();
-  toast("Template loaded — edit the questions, then Save & apply.");
+  toast(added.length
+    ? `Added ${added.length} template question${added.length > 1 ? "s" : ""}${
+        skipped ? `, skipped ${skipped} already present` : ""}. Edit, then Save & apply.`
+    : "Every template question is already on this recording.",
+    added.length ? "" : "err");
 });
 
-function pickedXpaths() {
-  const picked = $$(".xp").filter(c => c.checked).map(c => c.value);
-  // The current API scopes a configuration to one recording; ACTIVE_XPATH is
-  // the radio selection on that dialect.
-  if (CUR && CUR.detected_dialect === "supplement") return ACTIVE_XPATH ? [ACTIVE_XPATH] : [];
-  return picked;
-}
+function pickedXpaths() { return $$(".xp").filter(c => c.checked).map(c => c.value); }
 function langList(v) { return v.split(",").map(s => s.trim()).filter(Boolean); }
 
 function currentConfig() {
@@ -925,6 +952,7 @@ async function applySetup(dryRun) {
     // Used by the current API, which stores these on the server per recording.
     transcript_language: cfg.transcript_language,
     enable_qual: cfg.enable_qual,
+    edit_xpath: ACTIVE_XPATH,
   };
   const btn = dryRun ? $("#previewBtn") : $("#applyBtn");
   btn.disabled = true;
@@ -943,8 +971,13 @@ async function applySetup(dryRun) {
     QUAL = res.qual_survey || QUAL;
     $("#applyState").textContent = "Applied just now.";
     $("#step5").classList.add("ok");
-    toast(res.xpath ? `Configuration applied to ${res.xpath}.`
-                    : "Configuration applied to KoboToolbox.", "ok");
+    const n = (res.xpaths || []).length;
+    toast(n ? `Configuration applied to ${n} recording${n > 1 ? "s" : ""}.`
+            : "Configuration applied to KoboToolbox.", "ok");
+    if ((res.not_auto_answerable || []).length) {
+      toast(`Saved, but the model cannot answer these automatically: ${
+        res.not_auto_answerable.join(", ")}. They are stored for human coding.`, "err");
+    }
     // Re-read from the server so the form shows what was actually stored.
     await openAsset(CUR.uid);
     loadAssets();

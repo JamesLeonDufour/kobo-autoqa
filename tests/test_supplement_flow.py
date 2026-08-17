@@ -130,14 +130,87 @@ def main() -> int:
                     after.definitions[XPATH][0]["hint"]["labels"]["_default"]
                     == "List them, comma separated")
     fails += not ok("choices kept", len(after.definitions[XPATH][1]["choices"]) == 2)
+    # uuids are minted per recording, so compare against what was stored.
+    stored_defs = after.definitions[XPATH]
     fails += not ok("notes excluded from AI answering",
-                    after.qual[XPATH] == [new_survey[0]["uuid"], new_survey[1]["uuid"]],
-                    after.qual[XPATH])
+                    after.qual[XPATH] == [q["uuid"] for q in stored_defs
+                                          if q["type"] in S.AUTO_QUAL_TYPES],
+                    [(q["type"], q["uuid"] in after.qual[XPATH]) for q in stored_defs])
     fails += not ok("language split on write", after.transcribe[XPATH] == "fr",
                     after.transcribe[XPATH])
     fails += not ok("re-applying replaces rather than duplicates",
                     len([r for r in after.rows
                          if r["action"] == "manual_qual"]) == 1)
+
+    print("\n[several recordings at once]")
+    SECOND = "ambient"
+    tagged = new_survey + [
+        {"uuid": "88888888-8888-4888-8888-888888888888", "type": "qualTags",
+         "labels": {"_default": "Key themes raised"}},
+    ]
+    feats = S.AssetFeatures(client.list_advanced_features(U))
+    for x in (XPATH, SECOND):
+        S.sync_question(client, U, feats, x, transcribe_language="fr",
+                        translate_languages=["en"], questions=tagged)
+        feats = S.AssetFeatures(client.list_advanced_features(U))
+
+    both = S.AssetFeatures(client.list_advanced_features(U))
+    fails += not ok("second recording configured",
+                    len(both.definitions.get(SECOND, [])) == 4,
+                    len(both.definitions.get(SECOND, [])))
+    fails += not ok("both recordings ask the same questions",
+                    [q["labels"]["_default"] for q in both.definitions[XPATH]]
+                    == [q["labels"]["_default"] for q in both.definitions[SECOND]])
+    uu1 = {q["uuid"] for q in both.definitions[XPATH]}
+    uu2 = {q["uuid"] for q in both.definitions[SECOND]}
+    fails += not ok("each recording has its own question uuids", not (uu1 & uu2),
+                    sorted(uu1 & uu2))
+    fails += not ok("choice uuids are per recording too",
+                    not ({c["uuid"] for c in both.definitions[XPATH][1]["choices"]}
+                         & {c["uuid"] for c in both.definitions[SECOND][1]["choices"]}))
+
+    print("\n[types the model cannot answer]")
+    fails += not ok("tags excluded from auto-answering",
+                    all(both.question_type(SECOND, u) != "qualTags"
+                        for u in both.qual[SECOND]))
+    fails += not ok("tags still defined for human coding",
+                    any(q["type"] == "qualTags" for q in both.definitions[SECOND]))
+    # A configuration written by hand can still list one; it must be skipped
+    # rather than failing the submission forever.
+    hand = S.AssetFeatures([
+        {"question_xpath": "x", "action": "manual_qual",
+         "params": [{"uuid": "a", "type": "qualTags", "labels": {"_default": "t"}},
+                    {"uuid": "b", "type": "qualText", "labels": {"_default": "q"}}]},
+        {"question_xpath": "x", "action": "automatic_bedrock_qual",
+         "params": [{"uuid": "a"}, {"uuid": "b"}]},
+    ])
+    fails += not ok("bad hand-written config is skipped, not fatal",
+                    hand.answerable_qual("x") == ["b"], hand.answerable_qual("x"))
+
+    print("\n[applying to others must not strip their own questions]")
+    own = {"uuid": "99999999-9999-4999-8999-999999999999", "type": "qualText",
+           "labels": {"_default": "Only asked about the ambient recording"}}
+    feats = S.AssetFeatures(client.list_advanced_features(U))
+    S.sync_question(client, U, feats, SECOND, questions=tagged + [own])
+    feats = S.AssetFeatures(client.list_advanced_features(U))
+    # Now apply the shared set (without `own`) to both, editing XPATH.
+    for x in (XPATH, SECOND):
+        S.sync_question(client, U, feats, x, questions=tagged, merge=(x != XPATH))
+        feats = S.AssetFeatures(client.list_advanced_features(U))
+    labels = [q["labels"]["_default"] for q in feats.definitions[SECOND]]
+    fails += not ok("merged recording keeps its own question",
+                    "Only asked about the ambient recording" in labels, labels)
+    fails += not ok("edited recording is replaced, not merged",
+                    len(feats.definitions[XPATH]) == len(tagged),
+                    len(feats.definitions[XPATH]))
+
+    # re-applying the same set to both must not churn uuids
+    for x in (XPATH, SECOND):
+        S.sync_question(client, U, S.AssetFeatures(client.list_advanced_features(U)),
+                        x, questions=tagged)
+    again = S.AssetFeatures(client.list_advanced_features(U))
+    fails += not ok("re-apply across recordings is stable",
+                    {q["uuid"] for q in again.definitions[SECOND]} == uu2)
 
     print("\n[no calls to the removed endpoints]")
     r = httpx.get(f"http://127.0.0.1:8899/api/v2/assets/{U}/advanced_submission_post/")
