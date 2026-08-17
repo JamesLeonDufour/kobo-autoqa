@@ -15,6 +15,13 @@ os.environ.setdefault("DB_PATH", "/tmp/admin.db")
 os.environ.setdefault("PUBLIC_WEBHOOK_URL", "https://autoqa.example.org")
 os.environ.setdefault("WEBHOOK_SECRET", "s3cret")
 
+# Start from an empty queue. Several assertions count rows the run creates
+# ("backfill enqueued 3"), so a database left over from a previous run would
+# fail them for reasons that have nothing to do with the code.
+for _leftover in (os.environ["DB_PATH"], os.environ["DB_PATH"] + "-wal",
+                  os.environ["DB_PATH"] + "-shm"):
+    Path(_leftover).unlink(missing_ok=True)
+
 import httpx  # noqa: E402
 from app.webhook import app  # noqa: E402
 

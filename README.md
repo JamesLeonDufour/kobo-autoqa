@@ -367,13 +367,24 @@ form's own values win — so one form can be `fr-FR → en` while another is
 ## Testing without a Kobo server
 
 A fake KoboToolbox is included. It exposes the same endpoints and completes NLP
-jobs instantly, so you can exercise the whole flow offline:
+jobs instantly, so you can exercise the whole flow offline. It can impersonate
+either generation of the API:
+
+```bash
+curl -X POST http://127.0.0.1:8899/__mode/supplement   # current API
+curl -X POST http://127.0.0.1:8899/__reset             # back to legacy, clean state
+```
+
+In `supplement` mode the older `advanced_submission_*` endpoints 404 exactly as
+they do on a real current server, and the strict parameter schema and the
+accept-before-use rule are both enforced — so a payload the real server would
+reject fails here too.
 
 ```bash
 pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
 python tests/test_admin_flow.py                # 40 assertions, all should PASS
-python tests/test_supplement_flow.py           # 16 assertions, current NLP API
+python tests/test_supplement_flow.py           # 23 assertions, current NLP API
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \
