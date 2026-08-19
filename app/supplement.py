@@ -219,6 +219,7 @@ class AssetFeatures:
         self.translate: dict[str, list[str]] = {}     # xpath -> [language]
         self.qual: dict[str, list[str]] = {}          # xpath -> [question uuid]
         self.definitions: dict[str, list[dict]] = {}  # xpath -> [question def]
+        self.superseded: dict[str, list[str]] = {}    # xpath -> older audio languages
         for row in rows or []:
             xpath = row.get("question_xpath")
             action = row.get("action")
@@ -228,7 +229,16 @@ class AssetFeatures:
             if action == ACTION_TRANSCRIBE:
                 langs = [p.get("language") for p in params if p.get("language")]
                 if langs:
-                    self.transcribe[xpath] = langs[0]
+                    # Params are append-only: changing the audio language adds
+                    # to this row instead of replacing it, so a form edited
+                    # from fr to en holds ["fr", "en"]. The newest is the one
+                    # the user last asked for, and only one can apply.
+                    self.transcribe[xpath] = langs[-1]
+                    if len(langs) > 1:
+                        self.superseded[xpath] = langs[:-1]
+                        log.info("%s: audio language %s, superseding %s "
+                                 "(KoboToolbox cannot delete the earlier ones)",
+                                 xpath, langs[-1], ", ".join(langs[:-1]))
             elif action == ACTION_TRANSLATE:
                 self.translate.setdefault(xpath, []).extend(
                     p["language"] for p in params if p.get("language")

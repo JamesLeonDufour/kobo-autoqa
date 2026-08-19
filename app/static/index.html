@@ -363,7 +363,8 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
             <h2>Languages</h2>
             <div class="grid2" style="margin-top:8px">
               <label class="field"><span>Audio language (BCP-47, must have ASR support)</span>
-                <input type="text" id="cfgTranscript" placeholder="fr-FR"></label>
+                <input type="text" id="cfgTranscript" placeholder="fr-FR">
+                <span id="langHist" class="small muted hidden"></span></label>
               <label class="field"><span>Translate into (comma separated, blank = skip)</span>
                 <input type="text" id="cfgTranslations" placeholder="en, es">
                 <span id="langWarn" class="small hidden" style="color:var(--critical)"></span></label>
@@ -990,6 +991,14 @@ function renderSetup() {
   $("#cfgEnableQual").checked   = NEW_API ? (q.auto_qual_uuids || []).length > 0 : cfg.enable_qual;
   $("#qualSourceField").classList.toggle("hidden", NEW_API);
   $("#step3").classList.toggle("ok", !!$("#cfgTranscript").value);
+  // KoboToolbox keeps every audio language ever saved on a recording. Only the
+  // newest applies, but the old ones stay visible on the form, so say which
+  // one is live rather than letting the list look like a contradiction.
+  const past = (q && q.superseded_languages) || [];
+  $("#langHist").classList.toggle("hidden", !past.length);
+  if (past.length) $("#langHist").textContent =
+    `Previously ${past.join(", ")} — KoboToolbox cannot delete an old audio `
+    + `language, so it still appears on the form. Only the value above is used.`;
   checkLanguages();
 
   // step 4 — qual questions

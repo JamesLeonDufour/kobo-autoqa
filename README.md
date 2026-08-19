@@ -581,6 +581,14 @@ stored configuration: a target equal to the source language is skipped, and an
 analysis question the model cannot answer is skipped, however the row got
 there. Both are reported in the Monitor tab's note so the reason is visible.
 
+The **audio language** is the case where this bites hardest, because only one
+value can apply. Changing a recording from `fr` to `en` leaves the row holding
+`["fr", "en"]`, so the pipeline takes the **last** entry — the one saved most
+recently — and the Setup tab notes which older values are still stuck on the
+form. Reading the first entry instead meant a form kept transcribing in the
+language you had just changed away from, with Save & apply appearing to do
+nothing.
+
 Practically: **get the languages right before you apply**, and treat the
 Setup tab's warnings as blocking rather than advisory.
 

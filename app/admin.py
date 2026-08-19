@@ -375,6 +375,7 @@ def asset_detail(asset_uid: str, c: Ctx = Depends(ctx)) -> dict:
         per_question = {
             x: {
                 "transcript_language": features.transcribe.get(x, ""),
+                "superseded_languages": features.superseded.get(x, []),
                 "translation_languages": features.translate.get(x, []),
                 "qual_survey": features.definitions.get(x, []),
                 "auto_qual_uuids": features.qual.get(x, []),

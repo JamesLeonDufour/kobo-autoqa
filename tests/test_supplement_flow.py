@@ -260,6 +260,22 @@ def main() -> int:
                         {"_data": {"status": "complete"}, "_dateCreated": "2026-01-02T00:00:00Z"},
                     ]}) == 0)
 
+    print("\n[changing the audio language]")
+    # Params are append-only, so re-saving a recording as English leaves the
+    # row holding ["fr", "en"]. Reading the first one silently kept
+    # transcribing in the language the user had just changed away from.
+    changed = S.AssetFeatures([{"question_xpath": XPATH,
+                                "action": S.ACTION_TRANSCRIBE,
+                                "params": [{"language": "fr"}, {"language": "en"}]}])
+    fails += not ok("the newest audio language wins",
+                    changed.transcribe[XPATH] == "en", changed.transcribe)
+    fails += not ok("the superseded one is still reported",
+                    changed.superseded[XPATH] == ["fr"], changed.superseded)
+    once = S.AssetFeatures([{"question_xpath": XPATH, "action": S.ACTION_TRANSCRIBE,
+                             "params": [{"language": "fr"}]}])
+    fails += not ok("an unchanged recording reports no history",
+                    once.transcribe[XPATH] == "fr" and not once.superseded)
+
     print("\n[translating a language into itself]")
     keep, same = S.usable_targets("fr", ["es", "fr"])
     fails += not ok("self-translation dropped", keep == ["es"] and same == ["fr"], (keep, same))
