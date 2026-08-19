@@ -214,7 +214,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
         <input type="text" id="loginName" autocomplete="name"></label>
       <label class="field"><span>Username</span>
         <input type="text" id="loginUser" autocomplete="off" autocapitalize="none"
-               spellcheck="false" placeholder="leave blank for the recovery password"></label>
+               spellcheck="false"></label>
       <label class="field"><span>Password</span>
         <input type="password" id="pw" autocomplete="current-password" required></label>
       <button class="primary" type="submit" style="width:100%" id="loginSubmit">Sign in</button>
@@ -225,7 +225,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
       <a href="#" id="toggleMode">Create an account</a>
       <span id="firstHint" class="hidden"> — the first account becomes the administrator.</span>
     </p>
-    <p class="small muted" style="margin:8px 0 0" id="envHint">
+    <p class="small muted hidden" style="margin:8px 0 0" id="envHint">
       Leave the username blank to sign in with the recovery password set on the server.
     </p>
   </div>
@@ -642,7 +642,23 @@ const stageBadge = s => {
 };
 
 /* ------------------------------- auth -------------------------------- */
-function showLogin() { $("#login").classList.remove("hidden"); $("#app").classList.add("hidden"); }
+let ADMIN_ENABLED = false;
+
+async function showLogin() {
+  $("#login").classList.remove("hidden");
+  $("#app").classList.add("hidden");
+  // The recovery password is optional: a deployment can run on accounts alone.
+  // Where none is configured, signing in with a blank username 503s, so the
+  // offer has to be gated on the server actually having one.
+  try { ADMIN_ENABLED = !!(await api("/session")).admin_enabled; } catch {}
+  applyEnvHint();
+}
+
+function applyEnvHint() {
+  const offer = ADMIN_ENABLED && !SIGNUP_MODE;
+  $("#envHint").classList.toggle("hidden", !offer);
+  $("#loginUser").placeholder = offer ? "leave blank for the recovery password" : "";
+}
 function showApp()   { $("#login").classList.add("hidden");   $("#app").classList.remove("hidden"); }
 
 let SIGNUP_MODE = false;
@@ -651,7 +667,11 @@ $("#toggleMode").addEventListener("click", async e => {
   e.preventDefault();
   SIGNUP_MODE = !SIGNUP_MODE;
   let first = false;
-  try { first = (await api("/session")).first_account_is_admin; } catch {}
+  try {
+    const sess = await api("/session");
+    first = sess.first_account_is_admin;
+    ADMIN_ENABLED = !!sess.admin_enabled;
+  } catch {}
   $("#loginSubmit").textContent = SIGNUP_MODE ? "Create account" : "Sign in";
   $("#toggleMode").textContent  = SIGNUP_MODE ? "Back to sign in" : "Create an account";
   $("#nameField").style.display = SIGNUP_MODE ? "block" : "none";
@@ -659,7 +679,7 @@ $("#toggleMode").addEventListener("click", async e => {
     ? "Create an account to configure and monitor your own forms."
     : "Sign in to configure and monitor the pipeline.";
   $("#firstHint").classList.toggle("hidden", !(SIGNUP_MODE && first));
-  $("#envHint").classList.toggle("hidden", SIGNUP_MODE);
+  applyEnvHint();
   $("#pw").setAttribute("autocomplete", SIGNUP_MODE ? "new-password" : "current-password");
   $("#loginErr").classList.add("hidden");
   $("#loginOk").classList.add("hidden");

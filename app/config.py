@@ -89,17 +89,16 @@ class Settings:
 
     def validate(self) -> None:
         if not self.kobo_token or self.kobo_token in PLACEHOLDERS:
-            # Surfaced in the browser as a 400, so it names the screen that
-            # fixes it rather than a file the reader may have no access to.
-            raise RuntimeError(
-                "No KoboToolbox API token. Add one on the Connection tab."
-            )
+            # Just the fact. Where to fix it depends on who is reading:
+            # the admin UI adds "Connection tab", the CLI names the
+            # environment variables, because CLI-only mode has no such screen.
+            raise RuntimeError("No KoboToolbox API token is configured.")
         if not self.kobo_url.startswith("http"):
             raise RuntimeError("Kobo server URL must be a full http(s) URL")
         if self.kobo_url in PLACEHOLDERS:
             raise RuntimeError(
-                f"The KoboToolbox server is still the example value "
-                f"({self.kobo_url}). Set your own on the Connection tab."
+                f"The KoboToolbox server URL is still the example value "
+                f"({self.kobo_url})."
             )
 
 

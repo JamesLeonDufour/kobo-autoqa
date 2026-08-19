@@ -136,7 +136,11 @@ Choosing one opens its editor:
 Forms enabled in the UI are watched by the worker automatically — `ASSET_UIDS`
 in `.env` is optional and simply adds to that list.
 
-`ADMIN_PASSWORD` empty disables the UI entirely (CLI-only mode). Sessions are
+`ADMIN_PASSWORD` empty disables the break-glass login; with no accounts
+created either, that is CLI-only mode. The sign-in page then stops offering
+the recovery password rather than sending you to a 503, and the CLI names
+`KOBO_URL`/`KOBO_TOKEN` in its own errors instead of pointing at a screen
+that is not there. Sessions are
 signed cookies keyed on the password itself, so changing the password logs
 everyone out. Set `ADMIN_COOKIE_SECURE=false` only if you browse over plain
 HTTP.
@@ -203,7 +207,10 @@ Two sources, and the UI wins:
 | 2 | `.env` | used for any field the UI has not set |
 
 Blanking a field in the UI removes the override and falls back to `.env`;
-**Revert to .env** drops all of them at once. Secrets are never sent back to
+**Reset to server defaults** drops all of them at once. (The UI itself never
+names `.env` — whoever configures a form usually cannot read it — so the
+button talks about "server defaults" and the sign-in page about the "recovery
+password".) Secrets are never sent back to
 the browser — the form shows a masked hint (`ui-••••••456`) and only writes a
 new value when you actually type one, so saving the page without retyping your
 token does not wipe it.

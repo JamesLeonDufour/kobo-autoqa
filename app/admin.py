@@ -60,7 +60,9 @@ def _client(c: Ctx) -> KoboClient:
     try:
         c.settings.validate()
     except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400, detail=f"{exc} Set it on the Connection tab."
+        ) from exc
     return KoboClient(c.settings.kobo_url, c.settings.kobo_token,
                       verify=c.settings.verify_tls, timeout=c.settings.http_timeout)
 

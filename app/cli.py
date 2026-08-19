@@ -259,7 +259,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     setup_logging(settings.log_level)
     args = build_parser().parse_args()
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except RuntimeError as exc:
+        # Settings.validate() phrases itself for the admin UI, because that is
+        # where nearly everyone configures this. Someone running the CLI may
+        # have no such screen at all -- CLI-only mode is by definition a
+        # deployment with the UI switched off -- so name the environment
+        # variables here rather than pointing at a page that does not exist.
+        print(f"error: {exc}", file=sys.stderr)
+        print("Set KOBO_URL and KOBO_TOKEN in the environment or .env.",
+              file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
