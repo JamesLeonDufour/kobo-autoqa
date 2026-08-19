@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from .config import Settings, settings
+from .config import Settings, configured, settings
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -127,8 +127,8 @@ def describe_for_owner(store: Store, owner: int, resolved: Settings) -> dict:
         effective = getattr(resolved, field)
         source = "ui" if field in saved else ("env" if _ENV_BASELINE[field] else "default")
         if field in SECRET_FIELDS:
-            out[field] = {"set": bool(effective), "hint": _hint(str(effective)),
-                          "source": source}
+            out[field] = {"set": configured(str(effective)),
+                          "hint": _hint(str(effective)), "source": source}
         else:
             out[field] = {"value": effective, "source": source}
     out["admin_password_from_env"] = True
@@ -193,7 +193,7 @@ def describe(store: Store, s: Settings = settings) -> dict:
         source = "ui" if field in saved else ("env" if _ENV_BASELINE[field] else "default")
         if field in SECRET_FIELDS:
             out[field] = {
-                "set": bool(effective),
+                "set": configured(str(effective)),
                 "hint": _hint(str(effective)),
                 "source": source,
             }

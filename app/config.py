@@ -20,6 +20,17 @@ PLACEHOLDERS = frozenset({
 })
 
 
+def configured(value: str | None) -> bool:
+    """True when a setting holds a real value rather than a shipped example.
+
+    An example value is not a weak setting, it is an absent one: it is printed
+    in .env.example, so it is known to anyone who has seen the repository.
+    Counting it as present is worse than counting it as missing, because the
+    app then reports itself as configured and stops asking.
+    """
+    return bool(value) and value not in PLACEHOLDERS
+
+
 def _bool(value: str | None, default: bool = False) -> bool:
     if value is None or value == "":
         return default

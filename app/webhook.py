@@ -21,7 +21,7 @@ from . import runtime
 from .admin import (admin_only as admin_admin, guarded as admin_guarded,
                     router as admin_public)
 from .common import make_store, setup_logging, submission_uuid
-from .config import settings
+from .config import configured, settings
 from .store import Store
 
 setup_logging(settings.log_level)
@@ -116,11 +116,18 @@ def _accept(owner: int | None, asset_uid: str, request: Request, payload: dict) 
             raise HTTPException(status_code=409, detail="ambiguous asset; re-register the hook")
 
     s = runtime.for_owner(base, owner)
-    if s.webhook_secret:
+    if configured(s.webhook_secret):
         provided = request.headers.get(s.webhook_secret_header, "")
         if not secrets.compare_digest(provided, s.webhook_secret):
             log.warning("Rejected hook for %s: bad or missing secret header", asset_uid)
             raise HTTPException(status_code=403, detail="forbidden")
+    elif s.webhook_secret:
+        # The example secret from .env.example. Enforcing it would be theatre:
+        # it is in the repository. Treat it as unset so the UI says plainly
+        # that this endpoint is unauthenticated, rather than claiming it is
+        # secured by a string everybody can read.
+        log.error("WEBHOOK_SECRET is still the example value; this endpoint is "
+                  "effectively unauthenticated. Set a real one.")
 
     owned = base.for_owner(owner)
     allowed = set(s.asset_uids) | set(owned.watched_assets())

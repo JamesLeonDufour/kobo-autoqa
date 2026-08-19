@@ -554,7 +554,8 @@ pip install -r requirements.txt
 python tests/mock_kobo.py &                    # http://127.0.0.1:8899
 python tests/test_admin_flow.py                # 40 assertions, all should PASS
 python tests/test_supplement_flow.py           # 35 assertions, current NLP API
-python tests/test_accounts.py                  # 24 assertions, accounts + isolation
+python tests/test_accounts.py                  # accounts, approval, isolation, rate limits
+python tests/test_first_run.py                 # a clean install's first run, start to finish
 
 KOBO_URL=http://127.0.0.1:8899 KOBO_TOKEN=x ADMIN_PASSWORD=testpw \
 ADMIN_COOKIE_SECURE=false DB_PATH=/tmp/mock.db \

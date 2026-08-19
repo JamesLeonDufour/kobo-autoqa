@@ -24,7 +24,7 @@ from .assetconf import defaults_from_env, resolve, save as save_cfg
 from .auth import (COOKIE_NAME, check_env_password, current_user, issue_for_user,
                    require_admin, store as base_store)
 from .common import UUID_FIELDS, make_store, submission_uuid
-from .config import Settings, settings
+from .config import Settings, configured, settings
 from .kobo import KoboClient, KoboError
 from .store import STAGE_NEW, STAGE_FAILED, Store
 
@@ -265,10 +265,10 @@ def delete_user(user_id: int, admin: dict = Depends(require_admin)) -> dict:
 def env(c: Ctx = Depends(ctx)) -> dict:
     return {
         "kobo_url": c.settings.kobo_url,
-        "token_set": bool(c.settings.kobo_token),
+        "token_set": configured(c.settings.kobo_token),
         "env_asset_uids": c.settings.asset_uids,
         "public_webhook_url": c.settings.public_webhook_url,
-        "webhook_secret_set": bool(c.settings.webhook_secret),
+        "webhook_secret_set": configured(c.settings.webhook_secret),
         "webhook_secret_header": c.settings.webhook_secret_header,
         "dry_run": c.settings.dry_run,
         "poll_interval_seconds": c.settings.poll_interval_seconds,
