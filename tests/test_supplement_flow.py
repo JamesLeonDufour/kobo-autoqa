@@ -44,9 +44,20 @@ def main() -> int:
     print("\n[payload shape]")
     body = S.transcribe_body(XPATH, "fr-FR")
     fails += not ok("version envelope present", body.get("_version") == "20250820", body)
-    fails += not ok("language and locale split in payload",
-                    body[XPATH]["automatic_google_transcription"] == {"language": "fr", "locale": "FR"},
-                    body[XPATH])
+    # The locale is the whole regional code, matching what a live server
+    # records: {"language": "en", "locale": "en-GB"}. Sending the bare region
+    # subtag ("FR") is not what the API stores.
+    fails += not ok("transcription carries the full regional code",
+                    body[XPATH]["automatic_google_transcription"]
+                    == {"language": "fr", "locale": "fr-FR"}, body[XPATH])
+    fails += not ok("a bare code sends no locale at all",
+                    S.transcribe_body(XPATH, "fr")[XPATH]["automatic_google_transcription"]
+                    == {"language": "fr"})
+    # Translation has no regional variants -- /api/v2/languages/fr/ offers the
+    # single code "fr" -- so a locale there would be meaningless.
+    fails += not ok("translation targets stay bare",
+                    S.translate_body(XPATH, "fr-FR")[XPATH]["automatic_google_translation"]
+                    == {"language": "fr"})
     fails += not ok("qual addresses one uuid",
                     S.qual_body(XPATH, "abc")[XPATH]["automatic_bedrock_qual"] == {"uuid": "abc"})
 
@@ -144,7 +155,9 @@ def main() -> int:
                     after.qual[XPATH] == [q["uuid"] for q in stored_defs
                                           if q["type"] in S.AUTO_QUAL_TYPES],
                     [(q["type"], q["uuid"] in after.qual[XPATH]) for q in stored_defs])
-    fails += not ok("language split on write", after.transcribe[XPATH] == "fr",
+    # Storing the base language threw away the only part that names a real
+    # recognition model, and the row is append-only so it could not be undone.
+    fails += not ok("the region survives being written", after.transcribe[XPATH] == "fr-FR",
                     after.transcribe[XPATH])
     fails += not ok("re-applying replaces rather than duplicates",
                     len([r for r in after.rows
@@ -259,6 +272,17 @@ def main() -> int:
                         {"_data": {"status": "failed"}, "_dateCreated": "2026-01-01T00:00:00Z"},
                         {"_data": {"status": "complete"}, "_dateCreated": "2026-01-02T00:00:00Z"},
                     ]}) == 0)
+
+    print("\n[what the server can actually recognise]")
+    doc = {"name": "French",
+           "transcription_services": {"goog": {"fr-CA": "fr-CA", "fr-FR": "fr-FR"}},
+           "translation_services": {"goog": {"fr": "fr"}}}
+    fails += not ok("ASR variants read from the language document",
+                    S.asr_variants(doc) == ["fr-CA", "fr-FR"], S.asr_variants(doc))
+    fails += not ok("no bare language among them", "fr" not in S.asr_variants(doc))
+    fails += not ok("translation support detected", S.translatable(doc))
+    fails += not ok("a language with no ASR reports none",
+                    S.asr_variants({"transcription_services": {}}) == [])
 
     print("\n[changing the audio language]")
     # Params are append-only, so re-saving a recording as English leaves the

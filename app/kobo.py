@@ -196,6 +196,18 @@ class KoboClient:
             params={"format": "json"}, json=payload,
         ) or {}
 
+    # -- languages ----------------------------------------------------------
+    def get_language(self, code: str) -> dict:
+        """What the server's NLP services support for one language.
+
+        Returns the regional variants Google can actually recognise. There are
+        no bare languages in the ASR list -- `fr` offers only fr-CA and fr-FR --
+        so this is the difference between a working audio language and a
+        transcript that comes back empty.
+        """
+        return self._request("GET", f"/api/v2/languages/{quote(code)}/",
+                             params={"format": "json"}) or {}
+
     # -- REST services (hooks) ----------------------------------------------
     def list_hooks(self, asset_uid: str) -> list[dict]:
         data = self._request(

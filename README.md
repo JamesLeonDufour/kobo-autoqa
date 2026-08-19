@@ -560,6 +560,35 @@ sequence per question is really: request transcription → wait → **accept it*
 question. The pipeline does all of that unattended; the acceptance steps are
 the ones that are easy to miss when reading the schema alone.
 
+### Audio languages need a region
+
+There are **no bare languages in Google's ASR list**. Ask the server:
+
+```bash
+curl -s -H "Authorization: Token $KOBO_TOKEN" \
+     "$KOBO_URL/api/v2/languages/fr/" | jq .transcription_services
+# { "goog": { "fr-CA": "fr-CA", "fr-FR": "fr-FR" } }      <- no plain "fr"
+```
+
+Transcription therefore carries both fields, and the locale is the *whole*
+regional code, exactly as a live server records it:
+
+```json
+{"language": "en", "locale": "en-GB"}
+```
+
+Translation is the opposite: `translation_services` lists a single bare code
+per language, so targets never carry a region.
+
+The Setup tab looks this up as you type and offers the valid variants as
+buttons. Take them — a language the recogniser does not have produces a
+*successful* transcription containing an empty string, which then fails every
+downstream translation with `400 Empty request`.
+
+And note what no API can check for you: **the language must match what was
+actually spoken.** English audio transcribed as French also returns an empty
+string, with no error anywhere.
+
 ### Advanced-features rows are append-only
 
 Worth knowing before you save a form, because it is not reversible. On current

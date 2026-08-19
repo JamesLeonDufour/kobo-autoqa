@@ -64,6 +64,21 @@ STATUS_FAILED = "failed"
 STATUS_DELETED = "deleted"
 
 
+def language_and_locale(code: str) -> tuple[str, str]:
+    """Split a BCP-47 code the way this API expects it.
+
+    The locale is the *whole* regional code, not the region subtag: a live
+    server records `{"language": "en", "locale": "en-GB"}`. A bare code has no
+    locale at all.
+
+    This matters more than it looks. Google's ASR has no bare languages --
+    `/api/v2/languages/fr/` offers only fr-CA and fr-FR -- so dropping the
+    region throws away the only part that names a real recognition model.
+    """
+    base, region = split_language(code)
+    return base, (code.replace("_", "-") if region else "")
+
+
 def split_language(code: str) -> tuple[str, str]:
     """"fr-FR" -> ("fr", "FR"). A bare "fr" yields an empty locale."""
     if not code:
@@ -173,6 +188,20 @@ def localise_questions(questions: list[dict], existing: list[dict]) -> list[dict
             resolved["choices"] = choices
         out.append(resolved)
     return out
+
+
+def asr_variants(language_doc: dict) -> list[str]:
+    """Regional codes Google can transcribe, e.g. ["fr-CA", "fr-FR"]."""
+    services = (language_doc or {}).get("transcription_services") or {}
+    codes: set[str] = set()
+    for offered in services.values():
+        codes.update(offered or {})
+    return sorted(codes)
+
+
+def translatable(language_doc: dict) -> bool:
+    services = (language_doc or {}).get("translation_services") or {}
+    return any(offered for offered in services.values())
 
 
 def usable_targets(source: str, targets: list[str] | None) -> tuple[list[str], list[str]]:
@@ -436,7 +465,7 @@ def _envelope(xpath: str, action: str, body: dict) -> dict:
 
 
 def transcribe_body(xpath: str, language_code: str) -> dict:
-    language, locale = split_language(language_code)
+    language, locale = language_and_locale(language_code)
     body: dict[str, Any] = {"language": language}
     if locale:
         body["locale"] = locale
@@ -444,11 +473,10 @@ def transcribe_body(xpath: str, language_code: str) -> dict:
 
 
 def translate_body(xpath: str, language_code: str) -> dict:
-    language, locale = split_language(language_code)
-    body: dict[str, Any] = {"language": language}
-    if locale:
-        body["locale"] = locale
-    return _envelope(xpath, ACTION_TRANSLATE, body)
+    # Translation targets are bare: /api/v2/languages/fr/ lists exactly one
+    # translation service code, "fr", with no regional variants at all.
+    language, _ = split_language(language_code)
+    return _envelope(xpath, ACTION_TRANSLATE, {"language": language})
 
 
 def qual_body(xpath: str, question_uuid: str) -> dict:
@@ -487,9 +515,11 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
     uuids are its own.
     """
     if transcribe_language:
-        language, _ = split_language(transcribe_language)
+        # Store the regional code as given. Stripping it to the base language
+        # discarded the user's choice of recognition model, and the row is
+        # append-only so the mistake could not be undone afterwards.
         put_row(client, asset_uid, features, xpath, ACTION_TRANSCRIBE,
-                [{"language": language}])
+                [{"language": transcribe_language}])
 
     if translate_languages is not None:
         put_row(client, asset_uid, features, xpath, ACTION_TRANSLATE,
@@ -515,7 +545,7 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
 
 
 def accept_transcript_body(xpath: str, language_code: str) -> dict:
-    language, locale = split_language(language_code)
+    language, locale = language_and_locale(language_code)
     body: dict[str, Any] = {"language": language, "accepted": True}
     if locale:
         body["locale"] = locale
@@ -523,8 +553,5 @@ def accept_transcript_body(xpath: str, language_code: str) -> dict:
 
 
 def accept_translation_body(xpath: str, language_code: str) -> dict:
-    language, locale = split_language(language_code)
-    body: dict[str, Any] = {"language": language, "accepted": True}
-    if locale:
-        body["locale"] = locale
-    return _envelope(xpath, ACTION_TRANSLATE, body)
+    language, _ = split_language(language_code)
+    return _envelope(xpath, ACTION_TRANSLATE, {"language": language, "accepted": True})

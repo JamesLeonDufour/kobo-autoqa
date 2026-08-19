@@ -364,7 +364,8 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
             <div class="grid2" style="margin-top:8px">
               <label class="field"><span>Audio language (BCP-47, must have ASR support)</span>
                 <input type="text" id="cfgTranscript" placeholder="fr-FR">
-                <span id="langHist" class="small muted hidden"></span></label>
+                <span id="langHist" class="small muted hidden"></span>
+                <span id="asrHelp" class="small hidden" style="margin-top:4px;display:block"></span></label>
               <label class="field"><span>Translate into (comma separated, blank = skip)</span>
                 <input type="text" id="cfgTranslations" placeholder="en, es">
                 <span id="langWarn" class="small hidden" style="color:var(--critical)"></span></label>
@@ -1157,6 +1158,41 @@ function checkLanguages() {
 }
 $("#cfgTranscript").addEventListener("input", checkLanguages);
 $("#cfgTranslations").addEventListener("input", checkLanguages);
+
+/* Google has no bare ASR languages: /api/v2/languages/fr/ offers fr-CA and
+   fr-FR and nothing else. Typing "fr" therefore looks fine and transcribes to
+   an empty string, so show the real variants and let them be clicked in. */
+let LANG_TIMER = null;
+$("#cfgTranscript").addEventListener("input", () => {
+  clearTimeout(LANG_TIMER);
+  LANG_TIMER = setTimeout(showAsrVariants, 400);
+});
+async function showAsrVariants() {
+  const box = $("#asrHelp");
+  const typed = $("#cfgTranscript").value.trim();
+  const base = baseLang(typed);
+  if (!base) { box.classList.add("hidden"); return; }
+  let d;
+  try { d = await api(`/languages/${encodeURIComponent(base)}`); }
+  catch { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  if (!d.known || !d.asr.length) {
+    box.innerHTML = `<span style="color:var(--critical)">No speech recognition for `
+      + `"${esc(base)}" on this server — a transcript would come back empty.</span>`;
+    return;
+  }
+  const exact = d.asr.includes(typed);
+  box.innerHTML = `<span class="${exact ? "muted" : ""}" ${exact ? "" : 'style="color:var(--critical)"'}>`
+    + (exact ? `${esc(d.name)} — recognised.` :
+       `"${esc(typed)}" is not a recognition model. ${esc(d.name)} needs a region:`)
+    + `</span> ` + d.asr.map(v =>
+        `<button type="button" class="sm asrpick" data-v="${esc(v)}"${
+          v === typed ? ' style="font-weight:600"' : ""}>${esc(v)}</button>`).join(" ");
+  $$(".asrpick", box).forEach(b => b.addEventListener("click", () => {
+    $("#cfgTranscript").value = b.dataset.v;
+    checkLanguages(); showAsrVariants();
+  }));
+}
 
 function currentConfig() {
   return {

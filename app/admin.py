@@ -311,6 +311,29 @@ def test_credentials(payload: dict = Body(default={}), c: Ctx = Depends(ctx)) ->
             "server": url}
 
 
+@guarded.get("/languages/{code}")
+def language(code: str, c: Ctx = Depends(ctx)) -> dict:
+    """Which regional variants this server can transcribe and translate.
+
+    Backs the Setup tab's audio-language field. Google has no bare ASR
+    languages, so picking one from here is the difference between a real
+    transcript and an empty one.
+    """
+    base = S.split_language(code)[0]
+    if not base:
+        raise HTTPException(status_code=400, detail="No language code given.")
+    with _client(c) as client:
+        try:
+            doc = client.get_language(base)
+        except KoboError as exc:
+            if exc.status == 404:
+                return {"known": False, "code": base, "asr": [], "translation": False}
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"known": True, "code": base, "name": doc.get("name"),
+            "asr": S.asr_variants(doc), "translation": S.translatable(doc),
+            "regions": doc.get("regions") or []}
+
+
 # ---------------------------------------------------------------------------
 # assets
 # ---------------------------------------------------------------------------
