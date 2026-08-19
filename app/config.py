@@ -74,7 +74,7 @@ class Settings:
     poll_lookback_minutes: int = field(default_factory=lambda: int(os.getenv("POLL_LOOKBACK_MINUTES", "1440")))
     worker_tick_seconds: int = field(default_factory=lambda: int(os.getenv("WORKER_TICK_SECONDS", "15")))
     # How long to wait between checks while Kobo processes an async job.
-    async_poll_seconds: int = field(default_factory=lambda: int(os.getenv("ASYNC_POLL_SECONDS", "20")))
+    async_poll_seconds: int = field(default_factory=lambda: int(os.getenv("ASYNC_POLL_SECONDS", "10")))
     # How long an NLP job may sit "in_progress" before it is assumed abandoned
     # and requested again. Kobo can leave one running with nothing queued.
     nlp_stall_seconds: int = field(

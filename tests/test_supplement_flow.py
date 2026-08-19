@@ -15,6 +15,14 @@ os.environ.setdefault("KOBO_URL", "http://127.0.0.1:8899")
 os.environ.setdefault("KOBO_TOKEN", "x")
 os.environ.setdefault("DB_PATH", "/tmp/supplement.db")
 
+# Start from an empty queue. Assertions count the steps a run takes, and a
+# database left over from a previous run carries its counts forward -- which
+# fails them for reasons that have nothing to do with the code.
+from pathlib import Path as _Path  # noqa: E402
+for _leftover in (os.environ["DB_PATH"], os.environ["DB_PATH"] + "-wal",
+                  os.environ["DB_PATH"] + "-shm"):
+    _Path(_leftover).unlink(missing_ok=True)
+
 import httpx  # noqa: E402
 
 from app import payloads as P  # noqa: E402
@@ -357,15 +365,16 @@ def main() -> int:
     fails += not ok("an unchanged recording reports no history",
                     once.transcribe[XPATH] == "fr" and not once.superseded)
 
-    print("\n[passes are not wasted on bookkeeping]")
-    # A pass that only renames a stage costs a round trip and shows up in the
-    # count as if something happened. Stages that finish with nothing
-    # outstanding now hand straight on within the same pass.
-    fails += not ok("a fresh job polls at the base interval",
-                    S.poll_delay(20, 5) == 20)
-    fails += not ok("a minute in, it slows down", S.poll_delay(20, 120) == 40)
-    fails += not ok("a long one slows further", S.poll_delay(20, 600) == 60)
-    fails += not ok("and never beyond the cap", S.poll_delay(20, 99999) <= 90)
+    print("\n[waiting is not attempting]")
+    # Polling every ten seconds while Google works through a recording is not
+    # a hundred and fifty attempts at anything. Only steps that did something
+    # are counted, so the number a user sees reflects progress, not patience.
+    rows = store.list_jobs(limit=5)
+    row = next(r for r in rows if r["submission_uuid"] == SUB)
+    fails += not ok("a full run takes a handful of steps, not one per poll",
+                    row["attempts"] <= 10, row["attempts"])
+    fails += not ok("and none of them were failures", row["failures"] == 0,
+                    row["failures"])
 
     print("\n[a job nobody is working on]")
     # Kobo can leave a submission saying in_progress while its own queue

@@ -463,7 +463,7 @@ is the ground truth for whether the NLP actually ran.
 A job parked in `failed` is not lost. **Retry all failed** on the Monitor tab
 resets them to `new` and the worker picks them straight back up.
 
-### "Checks" is not a retry count
+### "Steps" counts progress, not patience
 
 Passes and failures are counted separately, and only failures park a job. This
 matters because Kobo's NLP is asynchronous: an eleven-minute transcription is
@@ -546,7 +546,7 @@ form's own values win — so one form can be `fr-FR → en` while another is
 | `TRANSCRIPT_LANGUAGE` | BCP-47 source language, e.g. `fr-FR`. Must be an ASR-supported language (80 languages / 145 regional variants). |
 | `TRANSLATION_LANGUAGES` | Comma-separated targets, e.g. `en,es`. Empty skips translation entirely. |
 | `QUAL_SOURCE_LANGUAGE` | Which text AutoQA reads. Empty = the original transcript. |
-| `ASYNC_POLL_SECONDS` | How often to re-check a running NLP job. 20s is fine; lower just burns API calls. |
+| `ASYNC_POLL_SECONDS` | How often to re-check a running NLP job. Polling never slows the transcription — KoboToolbox runs it regardless — so this only sets how quickly a finished result is noticed. 10s by default; raising it saves cheap requests at the cost of dead time at the end of every stage. |
 | `NLP_STALL_MINUTES` | How long a job may claim to be running before it is nudged with a fresh request. Kobo can leave one `in_progress` long past a normal run; asking again produces an attempt that completes. Set it above your typical transcription time — 11 to 25 minutes on the servers seen so far. |
 | `POLL_INTERVAL_SECONDS` | Catch-up poll frequency. 300s is a good default; drop to 60s if the webhook is not registered. |
 | `MAX_FAILURES` | Real errors before a submission is parked in `failed`. Polls do **not** count towards it, so a slow transcription is never mistaken for a broken one. |

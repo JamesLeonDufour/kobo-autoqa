@@ -58,6 +58,9 @@ class Pipeline:
         self.client = client
         self.store = store
         self._assets: dict[str, AssetContext] = {}
+        # Writes issued during the current pass. A pass that only looked and
+        # found nothing finished is not an attempt at anything.
+        self._writes = 0
 
     # -- asset context ------------------------------------------------------
     def asset_context(self, asset_uid: str) -> AssetContext:
@@ -163,6 +166,7 @@ class Pipeline:
             log.error("[%s/%s] %s", asset_uid, submission_uuid, give_up)
             return
 
+        self._writes = 0
         try:
             ctx = self.asset_context(asset_uid)
             if not ctx.cfg.enabled:
@@ -184,11 +188,16 @@ class Pipeline:
             next_stage, delay, note = self._run_stage(ctx, submission_uuid, supplement,
                                                        stage, handler, new_api)
 
+            # Only count a check that did something. Polling every ten seconds
+            # while Google works through a recording is not twenty attempts at
+            # anything, and showing it as such makes a healthy run look sick.
+            did_work = self._writes > 0 or next_stage != (stage or STAGE_NEW)
             self.store.advance(asset_uid, submission_uuid, next_stage,
-                               delay=delay, error=None, bump_attempts=True, note=note,
-                               failure=False)
-            log.info("[%s/%s] pass %s: %s", asset_uid, submission_uuid,
-                     attempts + 1, note or f"-> {next_stage}")
+                               delay=delay, error=None, bump_attempts=did_work,
+                               note=note, failure=False)
+            log.info("[%s/%s] %s: %s", asset_uid, submission_uuid,
+                     f"step {attempts + 1}" if did_work else "waiting",
+                     note or f"-> {next_stage}")
 
         except KoboError as exc:
             if exc.status == 404:
@@ -267,7 +276,6 @@ class Pipeline:
     # -- stages: current API (supplement dialect) ---------------------------
     def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
         requested = accepted = waiting = ready = stalled = 0
-        longest = 0.0
         empty: list[str] = []
         broken: list[str] = []
         for xpath, row_language in (ctx.features.transcribe if ctx.features else {}).items():
@@ -294,7 +302,6 @@ class Pipeline:
             node = S.transcript_node(sup, xpath)
             if S.is_pending(status):
                 running = S.stalled_for(node)
-                longest = max(longest, running)
                 if running <= self.s.nlp_stall_seconds:
                     waiting += 1
                     continue
@@ -317,12 +324,11 @@ class Pipeline:
             requested += 1
 
         if requested or accepted or waiting:
-            delay = S.poll_delay(self.s.async_poll_seconds, longest)
             note = _note("transcription", requested=requested, accepted=accepted,
-                         waiting=waiting, delay=delay)
+                         waiting=waiting, delay=self.s.async_poll_seconds)
             if stalled:
                 note = f"{note} (restarted {stalled} stalled job(s))"
-            return STAGE_TRANSCRIBE, delay, note
+            return STAGE_TRANSCRIBE, self.s.async_poll_seconds, note
 
         if not ready:
             # Nothing usable came back, and nothing is still running.
@@ -451,6 +457,7 @@ class Pipeline:
             log.info("[DRY RUN] %s -> PATCH %s", label, payload)
             return
         log.info("PATCH %s/%s: %s", asset_uid, root_uuid, label)
+        self._writes += 1
         self.client.patch_data_supplement(asset_uid, root_uuid, payload)
 
     # -- stages: older APIs -------------------------------------------------
