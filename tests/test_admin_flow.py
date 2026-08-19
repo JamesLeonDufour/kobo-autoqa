@@ -217,6 +217,27 @@ async def main():
         fails += not ok("and no existing language was overwritten",
                         "de-DE" not in langs.values(), langs)
 
+        print("\n[hints survive the round trip]")
+        # Hints are the guidance sent to the model with each question, and are
+        # where most of the answer quality comes from. They travel as
+        # {"labels": {"_default": ...}} on both questions and choices.
+        r = await c.put(f"/admin/api/assets/{U}/qual", json={
+            "xpaths": ["section_a/Recording_001"],
+            "edit_xpath": "section_a/Recording_001", "dry_run": True,
+            "qual_survey": [{"uuid": "", "type": "qualSelectOne",
+                             "labels": {"_default": "Probe"},
+                             "hint": {"labels": {"_default": "question guidance"}},
+                             "choices": [{"uuid": "", "labels": {"_default": "Yes"},
+                                          "hint": {"labels": {"_default": "choice guidance"}}}]}]})
+        q = (r.json().get("manual_qual") or [{}])[0]
+        fails += not ok("a question hint is kept",
+                        (q.get("hint") or {}).get("labels", {}).get("_default")
+                        == "question guidance", q.get("hint"))
+        fails += not ok("a choice hint is kept",
+                        ((q.get("choices") or [{}])[0].get("hint") or {})
+                        .get("labels", {}).get("_default") == "choice guidance",
+                        (q.get("choices") or [{}])[0])
+
         print("\n[logout]")
         await c.post("/admin/api/logout")
         fails += not ok("session cleared", (await c.get("/admin/api/env")).status_code == 401)

@@ -143,7 +143,10 @@ Choosing one opens its editor:
 2. **Analysis questions** — a visual builder (free text, select one/multiple,
    tags, integer, note) with choices and hints on both questions and choices.
    It loads the recording's existing questions first, so you add to what is
-   really there; the starter template fills in only what is missing. UUIDs are
+   really there; the starter template fills in only what is missing, and
+   carries hints of its own. Hints are the guidance sent to the model with
+   each question and are where most of the answer quality comes from — an
+   unhinted 1-5 scale is answered by guesswork. UUIDs are
    held stable per recording, so re-applying never duplicates columns.
 3. **Apply** — writes it to that recording, plus any others ticked under
    *Also apply to*. "Preview payload" shows the exact JSON first.

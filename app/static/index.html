@@ -1212,15 +1212,38 @@ $("#addQual").addEventListener("click", () => {
               choices: (t==="qualSelectOne"||t==="qualSelectMultiple") ? [] : [] });
   renderQual();
 });
+// Hints are guidance sent to the model alongside the question, and they are
+// where most of the answer quality comes from — an unhinted scale is answered
+// by guesswork. The starter set carries its own so they are visible from the
+// first apply rather than being a feature you have to discover.
+const H = t => ({ labels: { _default: t } });
 const TEMPLATE = [
-  { type:"qualText", labels:{_default:"Summarise the respondent's main concern in two sentences."}, choices:[] },
+  { type:"qualText", labels:{_default:"Summarise the respondent's main concern in two sentences."},
+    hint:H("Report only what the respondent actually said. If they raised no concern, say so rather than inventing one."),
+    choices:[] },
   { type:"qualSelectOne", labels:{_default:"Overall sentiment of the response"},
-    choices:[{uuid:"",labels:{_default:"Positive"}},{uuid:"",labels:{_default:"Neutral"}},{uuid:"",labels:{_default:"Negative"}}] },
+    hint:H("Judge the overall tone of the whole response, not individual words."),
+    choices:[
+      {uuid:"",labels:{_default:"Positive"},hint:H("Mainly satisfied, hopeful, or reporting improvement.")},
+      {uuid:"",labels:{_default:"Neutral"},hint:H("Factual or mixed, with no clear leaning either way.")},
+      {uuid:"",labels:{_default:"Negative"},hint:H("Mainly dissatisfied, worried, or reporting harm.")}] },
   { type:"qualSelectMultiple", labels:{_default:"Which needs are mentioned?"},
-    choices:["Food","Shelter","Health","WASH","Protection","Education","Livelihoods"]
-      .map(l => ({uuid:"",labels:{_default:l}})) },
-  { type:"qualTags", labels:{_default:"Key themes raised (free tags)"}, choices:[] },
-  { type:"qualInteger", labels:{_default:"Urgency on a 1-5 scale, where 5 is life-threatening."}, choices:[] },
+    hint:H("Select only needs the respondent raises themselves. Leave empty if none are mentioned."),
+    choices:[
+      ["Food","Food, nutrition, or going hungry."],
+      ["Shelter","Housing, shelter materials, or being displaced."],
+      ["Health","Illness, injury, medicine, or access to care."],
+      ["WASH","Water, sanitation, or hygiene."],
+      ["Protection","Safety, violence, or legal protection."],
+      ["Education","Schooling, training, or learning."],
+      ["Livelihoods","Income, work, land, or making a living."],
+    ].map(([l, h]) => ({uuid:"",labels:{_default:l},hint:H(h)})) },
+  { type:"qualTags", labels:{_default:"Key themes raised (free tags)"},
+    hint:H("For human coders — the model does not answer this type."),
+    choices:[] },
+  { type:"qualInteger", labels:{_default:"Urgency on a 1-5 scale, where 5 is life-threatening."},
+    hint:H("1 is no urgency at all; 3 is a need that can wait weeks; 5 is an immediate threat to life or safety."),
+    choices:[] },
 ];
 
 const qLabel = q => ((q.labels && q.labels._default) || q.label || "").trim().toLowerCase();
