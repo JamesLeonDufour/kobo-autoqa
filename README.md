@@ -11,10 +11,14 @@ credentials, pick a form, check what the server's NLP API accepts, build the
 analysis questions, register the webhook, then watch the queue. The CLI does
 the same things headlessly.
 
+> Not affiliated with or endorsed by KoboToolbox. It drives their public API
+> as any client would, and the transcription, translation and analysis are
+> performed by KoboToolbox itself — this only decides what to ask for, and when.
+
 ## Architecture
 
 ```
-     browser  ──►  /admin/   (setup wizard + queue dashboard)
+     browser  ──►  /admin/   (setup + queue dashboard)
                       │
                  REST Service (webhook)
 KoboToolbox  ─────────────────────────────►  api  (FastAPI)
@@ -433,7 +437,7 @@ is the ground truth for whether the NLP actually ran.
 | Jobs sit in **Queued** forever | The worker is not running or has no credentials. Check `docker compose logs -f worker`. |
 | Worker logs `Poll failed` against a server you never configured | It resolved the wrong account's connection. `docker compose logs worker \| grep 'connected to'` prints the server each account is using; a deployment that predates accounts is account 0. |
 | Jobs cycle in **Transcribing** and never finish | Kobo accepted the request but its NLP is not completing — AutoQA may not be enabled server-side, or the audio language is not ASR-supported. Check the supplement with "View". |
-| Everything lands in **Failed** with a 400 | Almost always the payload dialect. Run `introspect` against the server and pin `SCHEMA_DIALECT`; see [Known version sensitivity](#known-version-sensitivity). |
+| Everything lands in **Failed** with a 400 | Read the note on the job — the pipeline records the server's own error. Common ones: the audio language is not a recognition model (see [Audio languages need a region](#audio-languages-need-a-region)), or a translation target equals the source language. |
 | Webhook shows failures in Kobo | Secret mismatch (403) or the form is not enabled here (404). Re-register the hook from the Setup tab after any secret change. |
 | **transcription returned no speech** | Transcription succeeded but produced an empty string — Google heard no speech in the recording. Check the clip is audible and long enough, and that the audio language matches what was actually spoken. Nothing downstream can run without text. |
 | **translation gave up — Target language can't be equal to source language** | A translation target is the same language as the audio. Remove it from "Translate into"; the Setup tab now warns before you save and drops it on apply. |
@@ -493,7 +497,7 @@ docker compose logs -f worker | grep 'pass '
 
 ## Tuning
 
-The first three are **defaults**. The Setup wizard saves them per form, and a
+The first three are **defaults**. The Setup tab saves them per form, and a
 form's own values win — so one form can be `fr-FR → en` while another is
 `ar → en,fr`. The scheduling variables below are process-wide.
 
@@ -789,3 +793,10 @@ automated NLP enabled at all.
 Symptoms of a dialect mismatch are distinctive: every request 404s while the
 asset itself reads fine, and the 404 body is an HTML page rather than JSON —
 that means Django never routed the request to the API.
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Use it, fork it, run it commercially; just keep
+the copyright notice.
