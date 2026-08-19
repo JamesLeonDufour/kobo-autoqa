@@ -140,7 +140,7 @@ class Pipeline:
         for xpath in missing:
             self.client.create_advanced_feature(
                 asset_uid, question_xpath=xpath, action=S.ACTION_TRANSCRIBE,
-                params=[{"language": cfg.transcript_language}],
+                params=[{"language": S.split_language(cfg.transcript_language)[0]}],
             )
             targets, _same = S.usable_targets(cfg.transcript_language,
                                               cfg.translation_languages)
@@ -244,7 +244,10 @@ class Pipeline:
         requested = accepted = waiting = ready = stalled = 0
         empty: list[str] = []
         broken: list[str] = []
-        for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
+        for xpath, row_language in (ctx.features.transcribe if ctx.features else {}).items():
+            # The row can only name a base language; this form's settings may
+            # name the regional variant. The request needs both.
+            language = S.request_language(ctx.cfg.transcript_language, row_language)
             status, _text = S.transcript_state(sup, xpath)
             if S.is_done(status):
                 # A "successful" transcription of silence returns an empty

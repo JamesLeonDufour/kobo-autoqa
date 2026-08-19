@@ -240,14 +240,20 @@ QUAL_TYPES = CHOICE_TYPES | {"qualText", "qualInteger", "qualTags", "qualNote",
 ALLOWED = {"uuid", "type", "labels", "hint", "choices"}
 
 
-def _validate_transcribe_request(body: dict) -> None:
-    """The real server takes {"language": "en-GB"} and nothing else.
+def _validate_transcribe_request(xpath: str, body: dict) -> None:
+    """`language` must be a base code the advanced-features row lists.
 
-    A `locale` key -- in either the region-subtag or full-code form -- is
-    answered with `400 Invalid payload`. The stored result is split into
-    language + locale, which is what made the wrong shape look right.
+    A regional code in `language` is refused, and so is a base language the
+    row does not carry -- the row is the authority on what may be requested.
     """
-    if "locale" in body:
+    lang = str(body.get("language") or "")
+    if "-" in lang:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    configured = {p.get("language") for row in STATE["features"]
+                  if row.get("question_xpath") == xpath
+                  and row.get("action") == "automatic_google_transcription"
+                  for p in (row.get("params") or [])}
+    if configured and lang not in configured:
         raise HTTPException(status_code=400, detail="Invalid payload")
 
 
@@ -345,7 +351,7 @@ def patch_supplement_v2(uid: str, root_uuid: str, body: dict = Body(...)):
                 if payload.get("accepted"):
                     _accept(slot)
                     continue
-                _validate_transcribe_request(payload)
+                _validate_transcribe_request(xpath, payload)
                 slot["_versions"].append(_version({**payload, "status": "in_progress"}))
             elif action == "automatic_google_translation":
                 lang = payload.get("language")

@@ -214,6 +214,18 @@ def undeletable(existing: list[dict], submitted: list[dict]) -> list[str]:
     return labels
 
 
+def request_language(configured: str, row_language: str) -> str:
+    """The code to transcribe in: our regional one when it refines the row's.
+
+    The advanced-features row can only say "English". This form's settings may
+    say "en-GB". Use the more specific one when they agree, and the row's when
+    they do not -- the request has to name a language the row lists.
+    """
+    if configured and split_language(configured)[0] == split_language(row_language)[0]:
+        return configured
+    return row_language
+
+
 def usable_targets(source: str, targets: list[str] | None) -> tuple[list[str], list[str]]:
     """Split translation targets into those worth requesting and those not.
 
@@ -512,16 +524,29 @@ def _envelope(xpath: str, action: str, body: dict) -> dict:
     return {"_version": VERSION, xpath: {action: body}}
 
 
-def transcribe_body(xpath: str, language_code: str) -> dict:
-    """Request transcription in one language.
+def _language_body(language_code: str, **extra: Any) -> dict:
+    """`language` is the base code, `locale` the regional one, per the schema.
 
-    The regional code goes in `language` whole, and there is no `locale` field
-    in the request at all -- `{"language": "en-GB"}`. The *stored* result comes
-    back split as `{"language": "en", "locale": "en-GB"}`, which is not the
-    shape to send: sending it earns `400 Invalid payload`, as does sending the
-    bare region subtag.
+    Two constraints meet here. The request's `language` must be one of the
+    languages configured on the advanced-features row -- a request for "en"
+    against a row holding only "en-GB" is refused as `Invalid payload` -- and
+    the row itself accepts nothing but `{"language": ...}`, so the region has
+    no home there. It therefore lives in this pipeline's own per-form settings
+    and is sent as `locale`.
+
+    Getting this wrong is quiet: a result stored as `language: "en-GB"` is
+    accepted, transcribes fine, and never appears in the data table, which
+    looks the transcript up by base language.
     """
-    return _envelope(xpath, ACTION_TRANSCRIBE, {"language": language_code})
+    base, region = split_language(language_code)
+    body: dict[str, Any] = {"language": base, **extra}
+    if region:
+        body["locale"] = language_code.replace("_", "-")
+    return body
+
+
+def transcribe_body(xpath: str, language_code: str) -> dict:
+    return _envelope(xpath, ACTION_TRANSCRIBE, _language_body(language_code))
 
 
 def translate_body(xpath: str, language_code: str) -> dict:
@@ -572,11 +597,13 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
     editing.
     """
     if transcribe_language:
-        # Store the regional code as given. Stripping it to the base language
-        # discarded the user's choice of recognition model, and the row is
-        # append-only so the mistake could not be undone afterwards.
+        # The row holds the base language only -- it rejects a `locale` param,
+        # and a request whose `language` is not listed here is refused. The
+        # region is kept in this pipeline's own per-form settings and sent as
+        # the request's `locale`.
+        base, _ = split_language(transcribe_language)
         put_row(client, asset_uid, features, xpath, ACTION_TRANSCRIBE,
-                [{"language": transcribe_language}])
+                [{"language": base}])
 
     if translate_languages is not None:
         put_row(client, asset_uid, features, xpath, ACTION_TRANSLATE,
@@ -604,7 +631,7 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
 
 def accept_transcript_body(xpath: str, language_code: str) -> dict:
     return _envelope(xpath, ACTION_TRANSCRIBE,
-                     {"language": language_code, "accepted": True})
+                     _language_body(language_code, accepted=True))
 
 
 def accept_translation_body(xpath: str, language_code: str) -> dict:

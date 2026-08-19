@@ -48,18 +48,26 @@ def main() -> int:
     # `locale` field at all. The stored *result* comes back split as
     # {"language": "fr", "locale": "fr-FR"}, which is not the shape to send --
     # sending it earns `400 Invalid payload`, as does the bare region subtag.
-    fails += not ok("the whole regional code goes in `language`",
+    # `language` is the base code and `locale` the regional one. Putting the
+    # whole code in `language` is accepted and transcribes fine, and the result
+    # then never appears in Kobo's data table, which looks a transcript up by
+    # base language.
+    fails += not ok("base language and regional locale are separated",
                     body[XPATH]["automatic_google_transcription"]
-                    == {"language": "fr-FR"}, body[XPATH])
-    fails += not ok("no locale field is ever sent",
-                    "locale" not in body[XPATH]["automatic_google_transcription"])
-    fails += not ok("a bare code is sent as-is",
+                    == {"language": "fr", "locale": "fr-FR"}, body[XPATH])
+    fails += not ok("a bare code sends no locale",
                     S.transcribe_body(XPATH, "fr")[XPATH]["automatic_google_transcription"]
                     == {"language": "fr"})
-    fails += not ok("accepting a transcript uses the same shape",
+    fails += not ok("accepting uses the same split",
                     S.accept_transcript_body(XPATH, "fr-FR")[XPATH]
                     ["automatic_google_transcription"]
-                    == {"language": "fr-FR", "accepted": True})
+                    == {"language": "fr", "locale": "fr-FR", "accepted": True})
+    # The configuration row cannot hold a region, and refuses a request whose
+    # language it does not list, so the two have to be reconciled.
+    fails += not ok("our regional code refines the row's base",
+                    S.request_language("fr-FR", "fr") == "fr-FR")
+    fails += not ok("but never overrides a different language",
+                    S.request_language("fr-FR", "en") == "en")
     # Translation has no regional variants -- /api/v2/languages/fr/ offers the
     # single code "fr" -- so a locale there would be meaningless.
     fails += not ok("translation targets stay bare",
@@ -183,7 +191,9 @@ def main() -> int:
                     all(after.question_type(XPATH, u) for u in answerable))
     # Storing the base language threw away the only part that names a real
     # recognition model, and the row is append-only so it could not be undone.
-    fails += not ok("the region survives being written", after.transcribe[XPATH] == "fr-FR",
+    # The row stores the base language: it rejects a `locale` param, and the
+    # Kobo UI writes it this way too. The region lives in our own settings.
+    fails += not ok("the row stores the base language", after.transcribe[XPATH] == "fr",
                     after.transcribe[XPATH])
     fails += not ok("re-applying replaces rather than duplicates",
                     len([r for r in after.rows
