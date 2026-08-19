@@ -244,6 +244,7 @@ class Pipeline:
         requested = accepted = waiting = ready = stalled = 0
         empty: list[str] = []
         broken: list[str] = []
+        abandoned: list[str] = []
         for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
             status, _text = S.transcript_state(sup, xpath)
             if S.is_done(status):
@@ -264,14 +265,21 @@ class Pipeline:
                 continue
             node = S.transcript_node(sup, xpath)
             if S.is_pending(status):
-                if not S.is_stalled(node, self.s.nlp_stall_seconds):
+                running = S.stalled_for(node)
+                if running <= self.s.nlp_stall_seconds:
                     waiting += 1
                     continue
-                # Nothing is working on it: the server's own queue is empty
-                # while the submission still says in_progress. Ask again.
+                if running > self.s.nlp_stall_seconds * 2:
+                    # Asking again changes nothing: the server ignores a
+                    # request while one is in_progress, and `value: null`
+                    # refuses with "Attempt to delete non-existent value"
+                    # because there is no finished value to clear. There is no
+                    # way out of this state through the API.
+                    abandoned.append(f"{xpath} ({running / 60:.0f} min)")
+                    continue
                 log.warning("[%s/%s] transcription of %s has been running %.0f min "
-                            "with nothing queued; re-requesting",
-                            ctx.uid, uuid, xpath, S.stalled_for(node) / 60)
+                            "with nothing queued; asking once more",
+                            ctx.uid, uuid, xpath, running / 60)
                 stalled += 1
             if S.is_failed(status):
                 if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
@@ -287,6 +295,12 @@ class Pipeline:
             if stalled:
                 note = f"{note} (restarted {stalled} stalled job(s))"
             return STAGE_TRANSCRIBE, self.s.async_poll_seconds, note
+
+        if abandoned and not ready:
+            return STAGE_FAILED, 0.0, (
+                f"KoboToolbox left transcription of {', '.join(abandoned)} running "
+                f"with nothing queued, and the API cannot restart or clear a job in "
+                f"that state — re-submit the record, or clear it in KoboToolbox")
 
         if not ready:
             # Nothing usable came back, and nothing is still running.
