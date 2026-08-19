@@ -517,7 +517,10 @@ form's own values win — so one form can be `fr-FR → en` while another is
 ## Testing without a Kobo server
 
 A fake KoboToolbox is included. It exposes the same endpoints and completes NLP
-jobs instantly, so you can exercise the whole flow offline. It can impersonate
+jobs instantly, so you can exercise the whole flow offline. It models the
+append-only behaviour of `advanced-features` faithfully — `PUT` and `PATCH`
+merge params, `DELETE` answers 405 — because an earlier version replaced them
+instead, and that one difference hid three bugs that reached production. It can impersonate
 either generation of the API:
 
 ```bash
@@ -665,10 +668,22 @@ sending `[{"language":"es"}]` to a row holding `es, fr` leaves it holding
 `es, fr`. So a translation target or an analysis question, once written to a
 form, cannot be removed through the API at all.
 
+Three consequences worth knowing before you apply a configuration:
+
+- **An analysis question cannot be deleted.** Removing one in the editor
+  removes it from the editor only; it stays on the form and keeps being
+  answered, and billed, on every submission. The Setup tab now says so when
+  you apply, and the ✕ button says so before you click it.
+- **A translation target cannot be removed** once saved.
+- **The audio language can only be added to**, so a recording edited from
+  `fr` to `en` holds both; the newest wins.
+
 The pipeline copes by filtering at request time rather than trusting the
 stored configuration: a target equal to the source language is skipped, and an
-analysis question the model cannot answer is skipped, however the row got
-there. Both are reported in the Monitor tab's note so the reason is visible.
+an analysis question is skipped when the model cannot answer its type **or
+when nothing defines it any more** -- an auto-answer entry whose question was
+removed is refused with `400 Invalid qualitative analysis question uuid` on
+every submission otherwise. Both are reported in the Monitor tab's note so the reason is visible.
 
 The **audio language** is the case where this bites hardest, because only one
 value can apply. Changing a recording from `fr` to `en` leaves the row holding

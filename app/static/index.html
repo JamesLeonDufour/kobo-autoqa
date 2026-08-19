@@ -1109,7 +1109,7 @@ function renderQual() {
                qualTags:"Tags",qualInteger:"Integer",qualNote:"Note"}[t]}</option>`).join("")}
         </select>
         <input type="text" class="qlabel" value="${esc(label)}" placeholder="Question put to the model…">
-        <button class="sm danger qdel" title="Remove">✕</button>
+        <button class="sm danger qdel" title="Remove from this editor. KoboToolbox cannot delete an analysis question once applied — it will stay on the form and keep being answered.">✕</button>
       </div>
       ${dup ? `<p class="small" style="margin:6px 0 0;color:var(--critical)">Duplicate — another question has the same type and wording.</p>` : ""}
       ${(q.type === "qualTags" || q.type === "qualNote" || q.type === "qualAutoKeywordCount")
@@ -1302,6 +1302,11 @@ async function applySetup(dryRun) {
     const n = (res.xpaths || []).length;
     toast(n ? `Configuration applied to ${n} recording${n > 1 ? "s" : ""}.`
             : "Configuration applied to KoboToolbox.", "ok");
+    if ((res.undeletable || []).length) {
+      toast(`Still on the form: ${res.undeletable.join(", ")}. KoboToolbox has no way `
+          + `to delete an analysis question, so removing it here cannot remove it there `
+          + `— it will keep being answered on every submission.`, "err");
+    }
     if ((res.dropped_languages || []).length) {
       toast(`Dropped ${res.dropped_languages.join(", ")} — the audio is already in `
           + `that language, so there is nothing to translate.`, "err");

@@ -566,6 +566,8 @@ def _save_qual_supplement(client, asset_uid: str, features: S.AssetFeatures,
                 "dropped_languages": same_as_source}
 
     edited = payload.get("edit_xpath") or xpaths[0]
+    # Anything the editor dropped is still on the form and will stay there.
+    stuck = S.undeletable(features.definitions.get(edited, []), survey)
     stored: dict[str, list[dict]] = {}
     try:
         for xpath in xpaths:
@@ -591,7 +593,8 @@ def _save_qual_supplement(client, asset_uid: str, features: S.AssetFeatures,
             "transcript_language": features.transcribe.get(first, ""),
             "translation_languages": features.translate.get(first, []),
             "not_auto_answerable": skipped,
-            "dropped_languages": same_as_source}
+            "dropped_languages": same_as_source,
+            "undeletable": stuck}
 
 
 # ---------------------------------------------------------------------------

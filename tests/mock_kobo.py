@@ -93,6 +93,15 @@ def set_mode(mode: str, preconfigure: bool = True):
             {"uid": "qaf3", "question_xpath": "section_a/Recording_001",
              "action": "automatic_bedrock_qual",
              "params": [{"uuid": u} for u in QUAL_UUIDS]},
+            # A real form always defines the questions it asks the model to
+            # answer. Seeding auto-answer uuids without definitions described a
+            # server that cannot exist, and hid the fact that an *orphaned*
+            # uuid is refused on every submission.
+            {"uid": "qaf4", "question_xpath": "section_a/Recording_001",
+             "action": "manual_qual",
+             "params": [{"uuid": u, "type": "qualText",
+                         "labels": {"_default": f"Seeded question {i + 1}"}}
+                        for i, u in enumerate(QUAL_UUIDS)]},
         ]
     return {"ok": True, "mode": mode, "features": len(STATE["features"])}
 
@@ -167,16 +176,62 @@ def create_feature(uid: str, body: dict = Body(...)):
     return row
 
 
-@app.patch("/api/v2/assets/{uid}/advanced-features/{feature_uid}/")
-def patch_feature(uid: str, feature_uid: str, body: dict = Body(...)):
-    _require_new_api()
+def _identity(param: dict) -> str:
+    """What the server treats as "the same parameter" when merging.
+
+    Language rows are keyed on the language; qual rows on the question uuid.
+    """
+    return str(param.get("language") or param.get("uuid") or id(param))
+
+
+def _merge_params(existing: list, incoming: list) -> list:
+    """Params as a real server updates them: additive, never subtractive.
+
+    This is the behaviour the mock used to get wrong, and getting it wrong hid
+    three separate bugs that reached production -- an audio language that
+    would not change, a translation target that could not be removed, and the
+    empty transcript that followed from the first. Sending a shorter list does
+    not delete anything; it is a no-op for whatever is missing from it.
+    """
+    merged = list(existing)
+    by_identity = {_identity(p): i for i, p in enumerate(merged)}
+    for param in incoming:
+        key = _identity(param)
+        if key in by_identity:
+            merged[by_identity[key]] = param
+        else:
+            merged.append(param)
+    return merged
+
+
+def _update_feature(feature_uid: str, body: dict) -> dict:
     for row in STATE["features"]:
         if row["uid"] == feature_uid:
             if "params" in body:
                 _validate_params(row["action"], body["params"])
-                row["params"] = body["params"]
+                row["params"] = _merge_params(row["params"], body["params"])
             return row
     raise HTTPException(status_code=404, detail="Resource not found (404)")
+
+
+@app.patch("/api/v2/assets/{uid}/advanced-features/{feature_uid}/")
+def patch_feature(uid: str, feature_uid: str, body: dict = Body(...)):
+    _require_new_api()
+    return _update_feature(feature_uid, body)
+
+
+@app.put("/api/v2/assets/{uid}/advanced-features/{feature_uid}/")
+def put_feature(uid: str, feature_uid: str, body: dict = Body(...)):
+    """PUT merges exactly as PATCH does -- a full body does not replace."""
+    _require_new_api()
+    return _update_feature(feature_uid, body)
+
+
+@app.delete("/api/v2/assets/{uid}/advanced-features/{feature_uid}/")
+def delete_feature(uid: str, feature_uid: str):
+    """The real server does not offer this: configuration cannot be removed."""
+    _require_new_api()
+    raise HTTPException(status_code=405, detail='Method "DELETE" not allowed.')
 
 
 CHOICE_TYPES = {"qualSelectOne", "qualSelectMultiple"}

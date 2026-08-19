@@ -204,6 +204,22 @@ def translatable(language_doc: dict) -> bool:
     return any(offered for offered in services.values())
 
 
+def undeletable(existing: list[dict], submitted: list[dict]) -> list[str]:
+    """Labels of questions on the form that an edit tried to drop.
+
+    Removing a question in the editor cannot remove it from KoboToolbox: the
+    configuration row accepts additions and nothing else. Naming them lets the
+    UI say so, instead of appearing to delete something and leaving it there
+    being answered on every submission.
+    """
+    kept = {q.get("uuid") for q in submitted}
+    labels = []
+    for q in existing:
+        if q.get("uuid") not in kept:
+            labels.append((q.get("labels") or {}).get("_default") or q.get("uuid", "")[:8])
+    return labels
+
+
 def usable_targets(source: str, targets: list[str] | None) -> tuple[list[str], list[str]]:
     """Split translation targets into those worth requesting and those not.
 
@@ -294,14 +310,28 @@ class AssetFeatures:
     def answerable_qual(self, xpath: str) -> list[str]:
         """Auto-answer uuids the model can actually handle.
 
-        A configuration written before this filter existed -- or by hand -- can
-        list a qualTags question here, which fails on every submission forever.
-        Skipping it locally keeps those submissions moving.
+        Two ways a uuid gets here that the server will then refuse, both of
+        them permanent because advanced-features rows are append-only:
+
+          * a type the model cannot answer, such as qualTags, which a hand-made
+            configuration can list quite happily;
+          * a uuid with no definition at all -- the question was removed from
+            manual_qual, or never existed there, and the auto-answer entry
+            could not be removed alongside it.
+
+        Both earn `400 Invalid qualitative analysis question uuid` on every
+        submission, forever. Skipping them locally is the only remedy, since
+        the configuration itself cannot be corrected.
         """
         out = []
         for question_uuid in self.qual.get(xpath, []):
             qtype = self.question_type(xpath, question_uuid)
-            if qtype is None or qtype in AUTO_QUAL_TYPES:
+            if qtype is None:
+                log.warning("Skipping %s on %s: nothing defines it any more "
+                            "(the auto-answer entry cannot be deleted server-side)",
+                            question_uuid[:8], xpath)
+                continue
+            if qtype in AUTO_QUAL_TYPES:
                 out.append(question_uuid)
             else:
                 log.warning("Skipping %s question %s on %s: not auto-answerable",
@@ -513,6 +543,11 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
     the server models it: analysis questions belong to one audio question, not
     to the form. Returns the questions as stored for this recording, whose
     uuids are its own.
+
+    This only ever *adds*. Advanced-features params are append-only, so a
+    question left out of `questions` stays on the form and keeps being
+    answered; see `undeletable()` for reporting that back to whoever is
+    editing.
     """
     if transcribe_language:
         # Store the regional code as given. Stripping it to the base language
@@ -531,9 +566,10 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
         # to several without them sharing uuids or duplicating on re-apply.
         local = localise_questions(questions, existing)
         if merge:
-            # This recording is not the one being edited, so keep questions it
-            # has of its own; a deletion in the editor must not silently strip
-            # them from every other recording.
+            # Kept for the payload's sake, though the distinction is weaker
+            # than it looks: the server merges params rather than replacing
+            # them, so *nothing* sent here can remove a question from any
+            # recording. `merge=False` does not strip the edited one either.
             incoming = {q["uuid"] for q in local}
             local = local + [q for q in existing if q.get("uuid") not in incoming]
         put_row(client, asset_uid, features, xpath, ACTION_QUAL_DEFS,

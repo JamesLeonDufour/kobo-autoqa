@@ -136,25 +136,34 @@ def main() -> int:
                     translate_languages=["en"], questions=new_survey)
     after = S.AssetFeatures(client.list_advanced_features(U))
 
-    fails += not ok("new questions stored on the server",
-                    [q["labels"]["_default"] for q in after.definitions[XPATH]]
-                    == ["Which needs are mentioned?", "How successful would you rank this",
-                        "Section heading for human coders"],
-                    [q["labels"]["_default"] for q in after.definitions[XPATH]])
+    # Params are append-only, so applying a question set ADDS to whatever the
+    # form already had. The questions seeded on this form -- as if someone had
+    # set it up in Kobo's own UI -- are still there afterwards, and nothing the
+    # app can send will remove them.
+    labels = [q["labels"]["_default"] for q in after.definitions[XPATH]]
+    by_label = {q["labels"]["_default"]: q for q in after.definitions[XPATH]}
+    fails += not ok("new questions added to the form",
+                    {"Which needs are mentioned?", "How successful would you rank this",
+                     "Section heading for human coders"} <= set(labels), labels)
+    fails += not ok("questions already on the form survive",
+                    "Seeded question 1" in labels, labels)
     fails += not ok("question hint kept",
-                    after.definitions[XPATH][0]["hint"]["labels"]["_default"]
+                    by_label["Which needs are mentioned?"]["hint"]["labels"]["_default"]
                     == "List them, comma separated")
-    fails += not ok("choices kept", len(after.definitions[XPATH][1]["choices"]) == 2)
+    ranked = by_label["How successful would you rank this"]
+    fails += not ok("choices kept", len(ranked["choices"]) == 2)
     fails += not ok("choice hint kept",
-                    after.definitions[XPATH][1]["choices"][0]["hint"]["labels"]["_default"]
-                    == "Pick this when nothing went well",
-                    after.definitions[XPATH][1]["choices"][0])
-    # uuids are minted per recording, so compare against what was stored.
+                    ranked["choices"][0]["hint"]["labels"]["_default"]
+                    == "Pick this when nothing went well", ranked["choices"][0])
     stored_defs = after.definitions[XPATH]
+    answerable = set(after.answerable_qual(XPATH))
     fails += not ok("notes excluded from AI answering",
-                    after.qual[XPATH] == [q["uuid"] for q in stored_defs
-                                          if q["type"] in S.AUTO_QUAL_TYPES],
-                    [(q["type"], q["uuid"] in after.qual[XPATH]) for q in stored_defs])
+                    by_label["Section heading for human coders"]["uuid"] not in answerable)
+    fails += not ok("answerable questions are asked",
+                    {by_label["Which needs are mentioned?"]["uuid"],
+                     by_label["How successful would you rank this"]["uuid"]} <= answerable)
+    fails += not ok("every uuid asked about has a definition",
+                    all(after.question_type(XPATH, u) for u in answerable))
     # Storing the base language threw away the only part that names a real
     # recognition model, and the row is append-only so it could not be undone.
     fails += not ok("the region survives being written", after.transcribe[XPATH] == "fr-FR",
@@ -179,16 +188,26 @@ def main() -> int:
     fails += not ok("second recording configured",
                     len(both.definitions.get(SECOND, [])) == 4,
                     len(both.definitions.get(SECOND, [])))
-    fails += not ok("both recordings ask the same questions",
-                    [q["labels"]["_default"] for q in both.definitions[XPATH]]
-                    == [q["labels"]["_default"] for q in both.definitions[SECOND]])
+    applied = {q["labels"]["_default"] for q in tagged}
+    fails += not ok("both recordings ask the applied questions",
+                    applied <= {q["labels"]["_default"] for q in both.definitions[XPATH]}
+                    and applied <= {q["labels"]["_default"] for q in both.definitions[SECOND]})
+    # The first recording keeps the questions it already had as well: applying
+    # a set to a second recording cannot subtract from the first, and nothing
+    # can subtract from either.
+    fails += not ok("and the first keeps what it already had",
+                    "Seeded question 1" in
+                    {q["labels"]["_default"] for q in both.definitions[XPATH]})
     uu1 = {q["uuid"] for q in both.definitions[XPATH]}
     uu2 = {q["uuid"] for q in both.definitions[SECOND]}
     fails += not ok("each recording has its own question uuids", not (uu1 & uu2),
                     sorted(uu1 & uu2))
+    pick = lambda feats, x, label: next(  # noqa: E731
+        q for q in feats.definitions[x] if q["labels"]["_default"] == label)
+    ranked_label = "How successful would you rank this"
     fails += not ok("choice uuids are per recording too",
-                    not ({c["uuid"] for c in both.definitions[XPATH][1]["choices"]}
-                         & {c["uuid"] for c in both.definitions[SECOND][1]["choices"]}))
+                    not ({c["uuid"] for c in pick(both, XPATH, ranked_label)["choices"]}
+                         & {c["uuid"] for c in pick(both, SECOND, ranked_label)["choices"]}))
 
     print("\n[types the model cannot answer]")
     fails += not ok("tags excluded from auto-answering",
@@ -221,17 +240,28 @@ def main() -> int:
     labels = [q["labels"]["_default"] for q in feats.definitions[SECOND]]
     fails += not ok("merged recording keeps its own question",
                     "Only asked about the ambient recording" in labels, labels)
-    fails += not ok("edited recording is replaced, not merged",
-                    len(feats.definitions[XPATH]) == len(tagged),
-                    len(feats.definitions[XPATH]))
+    # `merge=False` cannot strip anything, because the server merges whatever
+    # it is sent. Applying a set that omits a question leaves that question
+    # exactly where it was -- there is no way to remove one through this API.
+    edited = {q["labels"]["_default"] for q in feats.definitions[XPATH]}
+    fails += not ok("questions omitted from an edit are NOT removed",
+                    "Seeded question 1" in edited, sorted(edited))
+    fails += not ok("everything applied is present",
+                    {q["labels"]["_default"] for q in tagged} <= edited, sorted(edited))
 
-    # re-applying the same set to both must not churn uuids
+    # re-applying the same set must not churn uuids or duplicate questions
+    before = {x: {q["uuid"] for q in feats.definitions[x]} for x in (XPATH, SECOND)}
+    counts = {x: len(feats.definitions[x]) for x in (XPATH, SECOND)}
     for x in (XPATH, SECOND):
         S.sync_question(client, U, S.AssetFeatures(client.list_advanced_features(U)),
                         x, questions=tagged)
     again = S.AssetFeatures(client.list_advanced_features(U))
-    fails += not ok("re-apply across recordings is stable",
-                    {q["uuid"] for q in again.definitions[SECOND]} == uu2)
+    fails += not ok("re-apply churns no uuids",
+                    all({q["uuid"] for q in again.definitions[x]} == before[x]
+                        for x in (XPATH, SECOND)))
+    fails += not ok("and duplicates nothing",
+                    all(len(again.definitions[x]) == counts[x] for x in (XPATH, SECOND)),
+                    {x: len(again.definitions[x]) for x in (XPATH, SECOND)})
 
     print("\n[a dead action is not retried forever]")
     # Every request appends a version, so a run of failures is recorded in the
