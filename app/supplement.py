@@ -21,7 +21,9 @@ each wrapping a `_data` object carrying `status` and (when complete) `value`.
 from __future__ import annotations
 
 import logging
+import time
 import uuid as uuid_lib
+from datetime import datetime, timezone
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -58,25 +60,17 @@ AUTO_QUAL_TYPES = CHOICE_TYPES | {"qualText", "qualInteger"}
 # what the server said.
 MAX_ACTION_FAILURES = 2
 
+# How long an attempt may sit "in_progress" before we assume nobody is working
+# on it. A transcription normally finishes well inside this; one that does not
+# is usually not queued anywhere at all -- the server's own bulk-actions view
+# reports no pending work while the submission still claims to be running --
+# and waiting on it politely means waiting for ever.
+STALL_SECONDS = 20 * 60
+
 STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 STATUS_DELETED = "deleted"
-
-
-def language_and_locale(code: str) -> tuple[str, str]:
-    """Split a BCP-47 code the way this API expects it.
-
-    The locale is the *whole* regional code, not the region subtag: a live
-    server records `{"language": "en", "locale": "en-GB"}`. A bare code has no
-    locale at all.
-
-    This matters more than it looks. Google's ASR has no bare languages --
-    `/api/v2/languages/fr/` offers only fr-CA and fr-FR -- so dropping the
-    region throws away the only part that names a real recognition model.
-    """
-    base, region = split_language(code)
-    return base, (code.replace("_", "-") if region else "")
 
 
 def split_language(code: str) -> tuple[str, str]:
@@ -470,6 +464,30 @@ def transcript_is_empty(supplement: dict, xpath: str) -> bool:
     return is_done(status) and not transcript_text(supplement, xpath).strip()
 
 
+def _parsed_date(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def stalled_for(node: dict | None) -> float:
+    """Seconds the current in-progress attempt has been running, else 0."""
+    version = _latest_version(node)
+    if (version.get("_data") or {}).get("status") != STATUS_IN_PROGRESS:
+        return 0.0
+    started = _parsed_date(version.get("_dateCreated"))
+    return max(0.0, time.time() - started) if started else 0.0
+
+
+def is_stalled(node: dict | None, seconds: float = STALL_SECONDS) -> bool:
+    """An attempt that has been running long enough to count as abandoned."""
+    return stalled_for(node) > seconds
+
+
 def is_failed(status: str | None) -> bool:
     return status == STATUS_FAILED
 
@@ -495,11 +513,15 @@ def _envelope(xpath: str, action: str, body: dict) -> dict:
 
 
 def transcribe_body(xpath: str, language_code: str) -> dict:
-    language, locale = language_and_locale(language_code)
-    body: dict[str, Any] = {"language": language}
-    if locale:
-        body["locale"] = locale
-    return _envelope(xpath, ACTION_TRANSCRIBE, body)
+    """Request transcription in one language.
+
+    The regional code goes in `language` whole, and there is no `locale` field
+    in the request at all -- `{"language": "en-GB"}`. The *stored* result comes
+    back split as `{"language": "en", "locale": "en-GB"}`, which is not the
+    shape to send: sending it earns `400 Invalid payload`, as does sending the
+    bare region subtag.
+    """
+    return _envelope(xpath, ACTION_TRANSCRIBE, {"language": language_code})
 
 
 def translate_body(xpath: str, language_code: str) -> dict:
@@ -581,11 +603,8 @@ def sync_question(client, asset_uid: str, features: "AssetFeatures", xpath: str,
 
 
 def accept_transcript_body(xpath: str, language_code: str) -> dict:
-    language, locale = language_and_locale(language_code)
-    body: dict[str, Any] = {"language": language, "accepted": True}
-    if locale:
-        body["locale"] = locale
-    return _envelope(xpath, ACTION_TRANSCRIBE, body)
+    return _envelope(xpath, ACTION_TRANSCRIBE,
+                     {"language": language_code, "accepted": True})
 
 
 def accept_translation_body(xpath: str, language_code: str) -> dict:

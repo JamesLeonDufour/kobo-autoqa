@@ -240,6 +240,17 @@ QUAL_TYPES = CHOICE_TYPES | {"qualText", "qualInteger", "qualTags", "qualNote",
 ALLOWED = {"uuid", "type", "labels", "hint", "choices"}
 
 
+def _validate_transcribe_request(body: dict) -> None:
+    """The real server takes {"language": "en-GB"} and nothing else.
+
+    A `locale` key -- in either the region-subtag or full-code form -- is
+    answered with `400 Invalid payload`. The stored result is split into
+    language + locale, which is what made the wrong shape look right.
+    """
+    if "locale" in body:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+
 def _validate_params(action: str, params: list):
     """Mimic the server's strict schema: unknown keys are rejected outright."""
     for p in params:
@@ -334,6 +345,7 @@ def patch_supplement_v2(uid: str, root_uuid: str, body: dict = Body(...)):
                 if payload.get("accepted"):
                     _accept(slot)
                     continue
+                _validate_transcribe_request(payload)
                 slot["_versions"].append(_version({**payload, "status": "in_progress"}))
             elif action == "automatic_google_translation":
                 lang = payload.get("language")

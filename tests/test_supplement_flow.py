@@ -44,15 +44,22 @@ def main() -> int:
     print("\n[payload shape]")
     body = S.transcribe_body(XPATH, "fr-FR")
     fails += not ok("version envelope present", body.get("_version") == "20250820", body)
-    # The locale is the whole regional code, matching what a live server
-    # records: {"language": "en", "locale": "en-GB"}. Sending the bare region
-    # subtag ("FR") is not what the API stores.
-    fails += not ok("transcription carries the full regional code",
+    # The request puts the whole regional code in `language` and has no
+    # `locale` field at all. The stored *result* comes back split as
+    # {"language": "fr", "locale": "fr-FR"}, which is not the shape to send --
+    # sending it earns `400 Invalid payload`, as does the bare region subtag.
+    fails += not ok("the whole regional code goes in `language`",
                     body[XPATH]["automatic_google_transcription"]
-                    == {"language": "fr", "locale": "fr-FR"}, body[XPATH])
-    fails += not ok("a bare code sends no locale at all",
+                    == {"language": "fr-FR"}, body[XPATH])
+    fails += not ok("no locale field is ever sent",
+                    "locale" not in body[XPATH]["automatic_google_transcription"])
+    fails += not ok("a bare code is sent as-is",
                     S.transcribe_body(XPATH, "fr")[XPATH]["automatic_google_transcription"]
                     == {"language": "fr"})
+    fails += not ok("accepting a transcript uses the same shape",
+                    S.accept_transcript_body(XPATH, "fr-FR")[XPATH]
+                    ["automatic_google_transcription"]
+                    == {"language": "fr-FR", "accepted": True})
     # Translation has no regional variants -- /api/v2/languages/fr/ offers the
     # single code "fr" -- so a locale there would be meaningless.
     fails += not ok("translation targets stay bare",
@@ -339,6 +346,26 @@ def main() -> int:
                              "params": [{"language": "fr"}]}])
     fails += not ok("an unchanged recording reports no history",
                     once.transcribe[XPATH] == "fr" and not once.superseded)
+
+    print("\n[a job nobody is working on]")
+    # Kobo can leave a submission saying in_progress while its own queue
+    # reports nothing pending. Waiting politely on that means waiting for ever,
+    # which is what "it is taking too long" turned out to be.
+    import time as _t  # noqa: PLC0415
+    fresh = {"_versions": [{"_data": {"status": "in_progress"},
+                            "_dateCreated": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())}]}
+    old_job = {"_versions": [{"_data": {"status": "in_progress"},
+                              "_dateCreated": "2020-01-01T00:00:00Z"}]}
+    done_job = {"_versions": [{"_data": {"status": "complete", "value": "x"},
+                               "_dateCreated": "2020-01-01T00:00:00Z"}]}
+    fails += not ok("a job that just started is left alone", not S.is_stalled(fresh))
+    fails += not ok("one running far too long counts as stalled", S.is_stalled(old_job))
+    fails += not ok("a finished job is never stalled", S.is_stalled(done_job) is False)
+    fails += not ok("nothing pending means no stall clock",
+                    S.stalled_for(done_job) == 0.0)
+    fails += not ok("an unparseable date does not crash it",
+                    S.stalled_for({"_versions": [{"_data": {"status": "in_progress"},
+                                                  "_dateCreated": "not a date"}]}) == 0.0)
 
     print("\n[translating a language into itself]")
     keep, same = S.usable_targets("fr", ["es", "fr"])

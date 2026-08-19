@@ -390,6 +390,7 @@ def list_assets(q: str = "", limit: int = 200, c: Ctx = Depends(ctx)) -> dict:
             "has_advanced": bool(a.get("advanced_features")),
             "managed": uid in saved,
             "enabled": saved.get(uid, {}).get("enabled", True) if uid in saved else False,
+            "missing": bool(saved.get(uid, {}).get("missing")),
         })
     out.sort(key=lambda r: (not r["managed"], (r["name"] or "").lower()))
     return {"results": out, "count": len(out)}

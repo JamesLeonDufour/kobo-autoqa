@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from . import runtime
 from .common import make_store, setup_logging, submission_uuid
 from .config import settings
-from .kobo import KoboClient
+from .kobo import KoboClient, KoboError
 from .pipeline import Pipeline
 
 log = logging.getLogger(__name__)
@@ -126,6 +126,18 @@ def main() -> None:
                 for uid in watched:
                     try:
                         poll_asset(pipe.client, owned, uid, s.poll_lookback_minutes)
+                    except KoboError as exc:
+                        if exc.status == 404:
+                            # The form was deleted in KoboToolbox. Nothing here
+                            # can bring it back, and re-asking every few minutes
+                            # buries real problems under a repeating traceback.
+                            log.warning("Form %s no longer exists (account %s); "
+                                        "no longer polling it", uid, owner)
+                            owned.set_asset_settings(
+                                uid, {**owned.get_asset_settings(uid), "enabled": False,
+                                      "missing": True})
+                            continue
+                        log.error("Poll failed for %s (account %s): %s", uid, owner, exc)
                     except Exception:  # noqa: BLE001
                         log.exception("Poll failed for %s (account %s)", uid, owner)
             last_poll = time.time()

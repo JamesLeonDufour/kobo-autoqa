@@ -921,7 +921,9 @@ function renderAssets() {
   const rows = ASSETS.filter(a => !q || (a.name||"").toLowerCase().includes(q) || a.uid.toLowerCase().includes(q));
   if (!rows.length) { $("#assetRows").innerHTML = `<tr><td colspan="5" class="muted">No forms match.</td></tr>`; return; }
   $("#assetRows").innerHTML = rows.map(a => {
-    const badge = !a.managed
+    const badge = a.missing
+      ? `<span class="badge st-critical" title="This form no longer exists in KoboToolbox, so it is no longer polled."><span class="dot"></span>Deleted in Kobo</span>`
+      : !a.managed
       ? `<span class="badge st-idle"><span class="dot"></span>Not set up</span>`
       : a.enabled
         ? `<span class="badge st-good"><span class="dot"></span>Active</span>`

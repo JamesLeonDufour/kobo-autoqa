@@ -241,7 +241,7 @@ class Pipeline:
 
     # -- stages: current API (supplement dialect) ---------------------------
     def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
-        requested = accepted = waiting = ready = 0
+        requested = accepted = waiting = ready = stalled = 0
         empty: list[str] = []
         broken: list[str] = []
         for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
@@ -262,11 +262,18 @@ class Pipeline:
                 else:
                     ready += 1
                 continue
+            node = S.transcript_node(sup, xpath)
             if S.is_pending(status):
-                waiting += 1
-                continue
+                if not S.is_stalled(node, self.s.nlp_stall_seconds):
+                    waiting += 1
+                    continue
+                # Nothing is working on it: the server's own queue is empty
+                # while the submission still says in_progress. Ask again.
+                log.warning("[%s/%s] transcription of %s has been running %.0f min "
+                            "with nothing queued; re-requesting",
+                            ctx.uid, uuid, xpath, S.stalled_for(node) / 60)
+                stalled += 1
             if S.is_failed(status):
-                node = S.transcript_node(sup, xpath)
                 if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
                     broken.append(f"{xpath}: {S.error_text(node) or 'transcription failed'}")
                     continue
@@ -275,9 +282,11 @@ class Pipeline:
             requested += 1
 
         if requested or accepted or waiting:
-            return STAGE_TRANSCRIBE, self.s.async_poll_seconds, _note(
-                "transcription", requested=requested, accepted=accepted,
-                waiting=waiting, delay=self.s.async_poll_seconds)
+            note = _note("transcription", requested=requested, accepted=accepted,
+                         waiting=waiting, delay=self.s.async_poll_seconds)
+            if stalled:
+                note = f"{note} (restarted {stalled} stalled job(s))"
+            return STAGE_TRANSCRIBE, self.s.async_poll_seconds, note
 
         if not ready:
             # Nothing usable came back, and nothing is still running.
@@ -323,11 +332,15 @@ class Pipeline:
                                     f"accept translation {xpath} [{language}]")
                         accepted += 1
                     continue
+                node = S.translation_node(sup, xpath, language)
                 if S.is_pending(status):
-                    waiting += 1
-                    continue
+                    if not S.is_stalled(node, self.s.nlp_stall_seconds):
+                        waiting += 1
+                        continue
+                    log.warning("[%s/%s] translation of %s to %s stalled for %.0f min; "
+                                "re-requesting", ctx.uid, uuid, xpath, language,
+                                S.stalled_for(node) / 60)
                 if S.is_failed(status):
-                    node = S.translation_node(sup, xpath, language)
                     if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
                         broken.append(f"{language}: "
                                       f"{S.error_text(node) or 'translation failed'}")
@@ -367,11 +380,14 @@ class Pipeline:
                 if S.is_done(status):
                     answered += 1
                     continue
+                node = S.qual_node(sup, xpath, question_uuid)
                 if S.is_pending(status):
-                    waiting += 1
-                    continue
+                    if not S.is_stalled(node, self.s.nlp_stall_seconds):
+                        waiting += 1
+                        continue
+                    log.warning("[%s/%s] analysis %s stalled for %.0f min; re-requesting",
+                                ctx.uid, uuid, question_uuid[:8], S.stalled_for(node) / 60)
                 if S.is_failed(status):
-                    node = S.qual_node(sup, xpath, question_uuid)
                     if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
                         broken.append(f"{question_uuid[:8]}: "
                                       f"{S.error_text(node) or 'analysis failed'}")
