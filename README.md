@@ -61,14 +61,10 @@ duplicate webhooks, restarts, and overlapping polls cost nothing.
 
 ## Prerequisites
 
-1. **AutoQA enabled on the server.** On a private server the `kpi` container
-   needs AWS Transcribe + Bedrock credentials and a Google Cloud Translation
-   key. AutoQA has been GA since 2.026.21 and each partner needs their own
-   AWS Marketplace subscription for the Bedrock model.
-2. **An API token** for a user with `change_asset` + `view_submissions` on the
+1. **An API token** for a user with `change_asset` + `view_submissions` on the
    target forms: `GET /token/?format=json`. Put it in `.env` or paste it into
    the admin UI's Connection tab — either works.
-3. **A public HTTPS endpoint** if you want the webhook. Polling alone works
+2. **A public HTTPS endpoint** if you want the webhook. Polling alone works
    behind NAT — just leave `PUBLIC_WEBHOOK_URL` empty and skip `register-hook`.
 
 ---
