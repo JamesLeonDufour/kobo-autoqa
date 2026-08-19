@@ -106,6 +106,17 @@ saving — no restart, no `docker compose` command.
 The Setup tab follows the shape of the problem: things that belong to the
 **form**, then things that belong to each **recording**.
 
+**Turning it on.** The Forms tab has a **Turn on** button per form. It asks
+for the audio language, then configures every recording that has none,
+registers the webhook, and marks the form active — the three things that
+previously had to be done separately, in two places, where forgetting the
+webhook quietly downgraded the form to five-minute polling.
+
+It only ever adds. A recording that is already configured is left exactly as
+it is, because the rows are append-only and a wrong audio language cannot be
+taken back. Use **Configure** for anything beyond the defaults: analysis
+questions, per-recording languages, backfill.
+
 **Form setup** — done once per form:
 
 1. **Server capability check** — reports which NLP API the server speaks, and
@@ -136,6 +147,11 @@ Choosing one opens its editor:
    held stable per recording, so re-applying never duplicates columns.
 3. **Apply** — writes it to that recording, plus any others ticked under
    *Also apply to*. "Preview payload" shows the exact JSON first.
+
+A recording added to a form *after* it was set up is picked up on the next
+pass and given transcription with the form's settings — the worker judges each
+recording on its own rather than treating a form with any configuration as
+finished.
 
 Forms enabled in the UI are watched by the worker automatically — `ASSET_UIDS`
 in `.env` is optional and simply adds to that list.

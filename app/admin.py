@@ -597,6 +597,99 @@ def _save_qual_supplement(client, asset_uid: str, features: S.AssetFeatures,
             "undeletable": stuck}
 
 
+@guarded.post("/assets/{asset_uid}/enable")
+def enable(asset_uid: str, payload: dict = Body(default={}),
+           c: Ctx = Depends(ctx)) -> dict:
+    """Turn on automation for a form in one step.
+
+    Everything this does was already possible, but only as three separate
+    actions in two places -- save the config, configure each recording, then
+    remember to register the webhook. Forgetting the last one silently
+    downgraded the form to five-minute polling.
+
+    It only ever adds: a recording that is already configured is left alone,
+    because the rows are append-only and a wrong audio language cannot be
+    taken back.
+    """
+    language = str(payload.get("transcript_language") or "").strip()
+    targets = payload.get("translation_languages")
+    if isinstance(targets, str):
+        targets = [t.strip() for t in targets.split(",") if t.strip()]
+
+    with _client(c) as client:
+        asset = _kobo_guard(client.get_asset, asset_uid)
+        recordings = P.media_question_xpaths(asset)
+        if not recordings:
+            raise HTTPException(status_code=400,
+                                detail="This form has no audio questions to transcribe.")
+        try:
+            features = S.AssetFeatures(client.list_advanced_features(asset_uid))
+        except KoboError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"This server does not offer the advanced-features API ({exc.status}), "
+                       f"so automation cannot be switched on from here.") from exc
+
+        cfg = resolve(c.settings, c.store, asset_uid)
+        language = language or cfg.transcript_language
+        targets = cfg.translation_languages if targets is None else targets
+        usable, same_as_source = S.usable_targets(language, targets)
+
+        warnings: list[str] = []
+        variants = S.asr_variants(_language_doc(client, language))
+        if variants and language not in variants:
+            warnings.append(
+                f"'{language}' is not one of this server's recognition models for that "
+                f"language ({', '.join(variants)}). Transcripts may come back empty.")
+
+        configured, already = [], []
+        for xpath in recordings:
+            if xpath in features.transcribe:
+                already.append(xpath)
+                continue
+            S.sync_question(client, asset_uid, features, xpath,
+                            transcribe_language=language, translate_languages=usable)
+            features = S.AssetFeatures(client.list_advanced_features(asset_uid))
+            configured.append(xpath)
+
+        hook = "skipped: no public URL set on the Connection tab"
+        if c.settings.public_webhook_url:
+            endpoint = (f"{c.settings.public_webhook_url.rstrip('/')}"
+                        f"/kobo/hook/{c.uid}/{asset_uid}")
+            existing = [h for h in _kobo_guard(client.list_hooks, asset_uid)
+                        if h.get("endpoint") == endpoint]
+            if existing:
+                hook = "already registered"
+            else:
+                headers = ({c.settings.webhook_secret_header: c.settings.webhook_secret}
+                           if c.settings.webhook_secret else {})
+                _kobo_guard(client.create_hook, asset_uid, name="AutoQA pipeline",
+                            endpoint=endpoint, custom_headers=headers,
+                            subset_fields=list(UUID_FIELDS))
+                hook = "registered"
+
+    save_cfg(c.store, asset_uid, {"enabled": True, "transcript_language": language,
+                                  "translation_languages": usable})
+    if same_as_source:
+        warnings.append(f"{', '.join(same_as_source)} is the same language as the audio, "
+                        f"so it cannot be translated into and was left out.")
+    log.info("Automation enabled on %s: configured %s, %s already set, hook %s",
+             asset_uid, len(configured), len(already), hook)
+    return {"ok": True, "configured": configured, "already_configured": already,
+            "transcript_language": language, "translation_languages": usable,
+            "hook": hook, "warnings": warnings}
+
+
+def _language_doc(client, code: str) -> dict:
+    base = S.split_language(code)[0]
+    if not base:
+        return {}
+    try:
+        return client.get_language(base)
+    except KoboError:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # hooks
 # ---------------------------------------------------------------------------

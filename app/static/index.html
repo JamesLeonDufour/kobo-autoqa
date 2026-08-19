@@ -931,10 +931,44 @@ function renderAssets() {
       <td class="mono muted">${esc(a.uid)}</td>
       <td class="num">${a.submissions.toLocaleString()}</td>
       <td>${badge}</td>
-      <td><button class="sm">Configure</button></td></tr>`;
+      <td class="row" style="gap:5px;border-bottom:0">
+        ${a.managed ? "" : `<button class="sm primary aenable">Turn on</button>`}
+        <button class="sm aconf">Configure</button></td></tr>`;
   }).join("");
-  $$("#assetRows tr.clickable").forEach(tr =>
-    tr.addEventListener("click", () => openAsset(tr.dataset.uid)));
+  $$("#assetRows tr.clickable").forEach(tr => {
+    const uid = tr.dataset.uid;
+    const on = $(".aenable", tr);
+    if (on) on.addEventListener("click", ev => { ev.stopPropagation(); turnOn(uid, on); });
+    tr.addEventListener("click", () => openAsset(uid));
+  });
+}
+/* Everything this does was already possible, but only as three actions in two
+   places -- and forgetting the webhook silently downgraded the form to
+   five-minute polling. */
+async function turnOn(uid, btn) {
+  const a = ASSETS.find(x => x.uid === uid) || {};
+  const lang = prompt(
+    `Audio language for "${a.name || uid}".\n\n`
+    + `Use the regional code your recordings are actually in — Google has no `
+    + `bare languages, so "en" is not a recognition model but "en-GB" is. `
+    + `Getting it wrong returns an empty transcript with no error.`,
+    ENV.defaults && ENV.defaults.transcript_language || "en-GB");
+  if (lang === null) return;
+  btn.disabled = true; btn.textContent = "Turning on…";
+  try {
+    const r = await api(`/assets/${encodeURIComponent(uid)}/enable`, {
+      method: "POST", body: JSON.stringify({ transcript_language: lang.trim() }) });
+    const bits = [];
+    if (r.configured.length) bits.push(`configured ${r.configured.length} recording(s)`);
+    if (r.already_configured.length) bits.push(`${r.already_configured.length} already set up`);
+    bits.push(`webhook ${r.hook}`);
+    toast(`${a.name || uid}: ${bits.join(", ")}.`, "ok");
+    (r.warnings || []).forEach(w => toast(w, "err"));
+    await loadAssets();
+  } catch (e) {
+    toast(e.message, "err");
+    btn.disabled = false; btn.textContent = "Turn on";
+  }
 }
 $("#assetSearch").addEventListener("input", renderAssets);
 $("#reloadAssets").addEventListener("click", loadAssets);

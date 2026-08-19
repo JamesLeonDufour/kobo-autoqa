@@ -95,8 +95,7 @@ class Pipeline:
             dialect = P.detect_dialect(schema)
 
         if features is not None:
-            if not features:
-                features = self._provision_features(asset_uid, asset, cfg)
+            features = self._provision_features(asset_uid, asset, cfg, features)
             xpaths = [x for x in features.xpaths if not cfg.xpaths or x in cfg.xpaths]
             log.info("Asset %s: supplement API, %s", asset_uid, features.describe())
         else:
@@ -114,34 +113,44 @@ class Pipeline:
         self._assets[asset_uid] = ctx
         return ctx
 
-    def _provision_features(self, asset_uid: str, asset: dict,
-                            cfg: AssetConfig) -> S.AssetFeatures:
-        """Configure transcription/translation on a form that has none yet.
+    def _provision_features(self, asset_uid: str, asset: dict, cfg: AssetConfig,
+                            features: S.AssetFeatures) -> S.AssetFeatures:
+        """Give transcription to any recording on this form that has none.
 
-        Only runs when the server reports an empty advanced-features list, so
-        it never disturbs a configuration set up by hand. Qualitative questions
-        are not invented here -- they carry uuids the server owns.
+        Previously this ran only when the form had *no* configuration at all,
+        which meant a recording added to a form later was ignored for ever:
+        the form as a whole looked configured, so nothing ever looked at the
+        new question. Now each recording is judged on its own.
+
+        Only recordings with nothing configured are touched -- an existing
+        setting is never overwritten, which matters more than usual here
+        because the rows are append-only and a wrong language cannot be taken
+        back. Analysis questions are not invented either; they carry uuids the
+        server owns.
         """
-        targets = cfg.xpaths or P.media_question_xpaths(asset)
-        if not targets:
-            return S.AssetFeatures([])
+        wanted = cfg.xpaths or P.media_question_xpaths(asset)
+        missing = [x for x in wanted if x not in features.transcribe]
+        if not missing:
+            return features
         if self.s.dry_run:
-            log.info("[DRY RUN] would configure transcription on %s for %s", asset_uid, targets)
-            return S.AssetFeatures([])
+            log.info("[DRY RUN] would configure transcription on %s for %s",
+                     asset_uid, missing)
+            return features
 
-        language, _ = S.split_language(cfg.transcript_language)
-        for xpath in targets:
+        for xpath in missing:
             self.client.create_advanced_feature(
                 asset_uid, question_xpath=xpath, action=S.ACTION_TRANSCRIBE,
-                params=[{"language": language}],
+                params=[{"language": cfg.transcript_language}],
             )
-            if cfg.translation_languages:
+            targets, _same = S.usable_targets(cfg.transcript_language,
+                                              cfg.translation_languages)
+            if targets:
                 self.client.create_advanced_feature(
                     asset_uid, question_xpath=xpath, action=S.ACTION_TRANSLATE,
-                    params=[{"language": S.split_language(l)[0]}
-                            for l in cfg.translation_languages],
+                    params=[{"language": S.split_language(l)[0]} for l in targets],
                 )
-        log.info("Configured transcription on %s for %s", asset_uid, targets)
+        log.info("Configured transcription on %s for %s (%s already had it)",
+                 asset_uid, missing, len(features.transcribe))
         return S.AssetFeatures(self.client.list_advanced_features(asset_uid))
 
     # -- job driver ---------------------------------------------------------

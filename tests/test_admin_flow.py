@@ -188,6 +188,35 @@ async def main():
                         and _resolved().webhook_secret == "s3cret",
                         _resolved().webhook_secret)
 
+        print("\n[one-click enable]")
+        # Everything this does was possible before, but only as three separate
+        # actions -- and forgetting the webhook silently downgraded the form to
+        # five-minute polling.
+        async with httpx.AsyncClient() as raw:
+            await raw.post(os.environ["KOBO_URL"] + "/__mode/supplement")
+        r = await c.post(f"/admin/api/assets/{U}/enable",
+                         json={"transcript_language": "fr-FR"})
+        fails += not ok("enable succeeds", r.status_code == 200, r.text[:160])
+        body = r.json()
+        fails += not ok("nothing is configured twice",
+                        not set(body["configured"]) & set(body["already_configured"]), body)
+        fails += not ok("the webhook is registered in the same step",
+                        body["hook"] in ("registered", "already registered"), body["hook"])
+        fails += not ok("the form is now managed",
+                        any(x["managed"] for x in
+                            (await c.get("/admin/api/assets")).json()["results"]))
+
+        # A recording already set up must not be touched: the rows are
+        # append-only, so overwriting its language could not be undone.
+        r2 = (await c.post(f"/admin/api/assets/{U}/enable",
+                           json={"transcript_language": "de-DE"})).json()
+        fails += not ok("re-running configures nothing new", not r2["configured"], r2)
+        detail = (await c.get(f"/admin/api/assets/{U}")).json()
+        langs = {x: v["transcript_language"]
+                 for x, v in (detail.get("per_question") or {}).items()}
+        fails += not ok("and no existing language was overwritten",
+                        "de-DE" not in langs.values(), langs)
+
         print("\n[logout]")
         await c.post("/admin/api/logout")
         fails += not ok("session cleared", (await c.get("/admin/api/env")).status_code == 401)

@@ -73,11 +73,21 @@ def main() -> int:
     ctx = pipe.asset_context(U)
     fails += not ok("supplement dialect detected", ctx.dialect == P.SUPPLEMENT, ctx.dialect)
     fails += not ok("server config read back",
-                    ctx.features.transcribe == {XPATH: "fr"}
-                    and ctx.features.translate == {XPATH: ["en", "es"]}
+                    ctx.features.transcribe[XPATH] == "fr"
+                    and ctx.features.translate[XPATH] == ["en", "es"]
                     and len(ctx.features.qual[XPATH]) == 2,
                     ctx.features.describe())
-    fails += not ok("xpaths derived from server config", ctx.xpaths == [XPATH], ctx.xpaths)
+    # A recording the form does not configure gets transcription of its own.
+    # Judging each recording separately is what makes a question added to a
+    # form later get picked up at all: the form as a whole already looked
+    # configured, so nothing ever looked at the new one.
+    fails += not ok("an unconfigured recording is given one",
+                    ctx.features.transcribe.get("ambient") == settings.transcript_language,
+                    ctx.features.transcribe)
+    fails += not ok("without disturbing the configured one",
+                    ctx.features.transcribe[XPATH] == "fr", ctx.features.transcribe[XPATH])
+    fails += not ok("both recordings are then processed",
+                    sorted(ctx.xpaths) == ["ambient", XPATH], ctx.xpaths)
 
     print("\n[state machine]")
     store.enqueue(U, SUB, {"source": "test"})
