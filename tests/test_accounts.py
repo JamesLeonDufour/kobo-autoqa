@@ -94,6 +94,36 @@ async def main():
         r = await b.get("/admin/api/users")
         fails += not ok("non-admin cannot list accounts", r.status_code == 403, r.status_code)
 
+    print("\n[admin creates an account directly]")
+    async with client() as a:
+        await a.post("/admin/api/login", json={"username": "firstuser",
+                                               "password": "first-account-pw"})
+        r = await a.post("/admin/api/users", json={
+            "username": "madebyadmin", "password": "made-by-an-admin",
+            "name": "Direct", "is_admin": True})
+        body = r.json()
+        fails += not ok("account created", r.status_code == 200, r.text[:120])
+        fails += not ok("active without waiting for approval",
+                        body["user"]["status"] == "active", body["user"]["status"])
+        fails += not ok("role assigned as asked", body["user"]["is_admin"] is True)
+        r = await a.post("/admin/api/users", json={
+            "username": "plainmember", "password": "a-plain-member-pw"})
+        fails += not ok("member role is the default",
+                        r.json()["user"]["is_admin"] is False)
+        r = await a.post("/admin/api/users", json={"username": "x", "password": "short"})
+        fails += not ok("bad input still refused", r.status_code == 400)
+    async with client() as m:
+        r = await m.post("/admin/api/login", json={"username": "madebyadmin",
+                                                    "password": "made-by-an-admin"})
+        fails += not ok("the new account can sign in straight away", r.status_code == 200)
+    async with client() as b:
+        await b.post("/admin/api/login", json={"username": "seconduser",
+                                                "password": "second-account-pw"})
+        r = await b.post("/admin/api/users", json={"username": "sneaky",
+                                                    "password": "not-allowed-here"})
+        fails += not ok("non-admins cannot create accounts", r.status_code == 403,
+                        r.status_code)
+
     print("\n[isolation]")
     async with client() as a, client() as b:
         await a.post("/admin/api/login", json={"username": "firstuser",

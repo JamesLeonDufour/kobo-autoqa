@@ -238,7 +238,6 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
   <span id="connBadge" class="badge st-idle"><span class="dot"></span>checking…</span>
   <nav class="tabs" role="tablist">
     <button class="tab" role="tab" data-tab="forms"      aria-selected="true">Forms</button>
-    <button class="tab" role="tab" data-tab="setup"      aria-selected="false">Setup</button>
     <button class="tab" role="tab" data-tab="monitor"    aria-selected="false">Monitor</button>
     <button class="tab" role="tab" data-tab="connection" aria-selected="false">Connection</button>
     <button class="tab hidden" role="tab" data-tab="users" aria-selected="false" id="usersTab">Users</button>
@@ -270,6 +269,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
   <!-- ---------------- SETUP ---------------- -->
   <section id="tab-setup" class="hidden">
     <div id="noAsset" class="card muted">Pick a form on the <strong>Forms</strong> tab first.</div>
+    <div class="row" style="margin-bottom:10px"><button class="sm" id="backToForms">← All forms</button></div>
 
     <div id="setupBody" class="hidden">
       <div class="card">
@@ -278,6 +278,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           <span id="setupUid" class="chip mono"></span>
           <span class="spacer" style="flex:1"></span>
           <label class="switch small"><input type="checkbox" id="cfgEnabled"> Pipeline enabled</label>
+          <span id="enabledState" class="small muted"></span>
         </header>
         <p class="muted small" style="margin:0">These settings cover the whole form. Each audio
           question is configured separately below.</p>
@@ -316,6 +317,10 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
             <p class="muted small" style="margin:2px 0 10px">
               The interval poller always runs. A REST Service webhook makes it near-instant.</p>
             <div id="hookArea"></div>
+            <label class="switch small" style="margin-top:8px">
+              <input type="checkbox" id="hookFull"> Send the whole submission
+            </label>
+            <p class="small muted" style="margin:4px 0 0" id="hookScopeNote"></p>
             <div class="row" style="margin-top:10px">
               <button id="hookBtn">Register webhook</button>
               <span id="hookHint" class="small muted"></span>
@@ -440,6 +445,30 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           <tbody id="userRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
         </table>
       </div>
+    </div>
+
+    <div class="card">
+      <header><h2 style="margin:0">Add an account</h2></header>
+      <p class="muted small" style="margin-top:0">
+        Creates an approved account straight away, rather than waiting for someone
+        to sign up. They should change the password once they are in.
+      </p>
+      <form id="newUserForm" class="grid2">
+        <label class="field"><span>Username</span>
+          <input type="text" id="nuUser" autocomplete="off" spellcheck="false"
+                 placeholder="3-32 letters, digits, dot, dash or underscore"></label>
+        <label class="field"><span>Full name (optional)</span>
+          <input type="text" id="nuName" autocomplete="off"></label>
+        <label class="field"><span>Password (at least 12 characters)</span>
+          <input type="password" id="nuPass" autocomplete="new-password"></label>
+        <label class="field"><span>Role</span>
+          <select id="nuRole">
+            <option value="member">Member — their own forms and connection</option>
+            <option value="admin">Administrator — can also manage accounts</option>
+          </select></label>
+      </form>
+      <button class="primary" id="nuSave">Create account</button>
+      <span id="nuState" class="small muted" style="margin-left:8px"></span>
     </div>
 
     <div class="card">
@@ -726,6 +755,20 @@ async function loadUsers() {
   });
 }
 
+$("#nuSave").addEventListener("click", async () => {
+  const btn = $("#nuSave"); btn.disabled = true;
+  $("#nuState").textContent = "Creating…";
+  try {
+    const r = await api("/users", { method: "POST", body: JSON.stringify({
+      username: $("#nuUser").value.trim(), name: $("#nuName").value.trim(),
+      password: $("#nuPass").value, is_admin: $("#nuRole").value === "admin" }) });
+    $("#nuUser").value = ""; $("#nuName").value = ""; $("#nuPass").value = "";
+    $("#nuState").textContent = "";
+    toast(`Created ${r.user.username} as ${r.user.is_admin ? "administrator" : "member"}.`, "ok");
+    loadUsers();
+  } catch (e) { $("#nuState").textContent = ""; toast(e.message, "err"); }
+  finally { btn.disabled = false; }
+});
 $("#pwSave").addEventListener("click", async () => {
   try {
     await api("/me/password", { method: "POST", body: JSON.stringify({
@@ -760,6 +803,9 @@ $$(".tab").forEach(t => t.addEventListener("click", () => selectTab(t.dataset.ta
 function selectTab(name) {
   $$(".tab").forEach(t => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
   ["forms","setup","monitor","connection","users"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
+  // Setup has no tab of its own -- it belongs to whichever form was opened --
+  // so keep Forms lit while it is showing.
+  if (name === "setup") $(`.tab[data-tab="forms"]`).setAttribute("aria-selected", "true");
   if (name === "monitor") loadJobs();
   if (name === "connection") loadCredentials();
   if (name === "users") loadUsers();
@@ -1250,9 +1296,30 @@ async function applySetup(dryRun) {
   } catch (e) { toast(e.message, "err"); }
   finally { btn.disabled = false; }
 }
+$("#backToForms").addEventListener("click", () => { ACTIVE_XPATH = null; selectTab("forms"); });
 $("#closeEditor").addEventListener("click", () => {
   ACTIVE_XPATH = null;
   renderSetup();
+});
+/* This one belongs to the form, not to a recording, so it cannot wait for the
+   recording editor's "Save & apply" -- which is not even on screen until a
+   recording is opened. Save it the moment it is toggled. */
+$("#cfgEnabled").addEventListener("change", async () => {
+  const on = $("#cfgEnabled").checked;
+  $("#enabledState").textContent = "Saving…";
+  try {
+    await api(`/assets/${encodeURIComponent(CUR.uid)}/config`,
+      { method: "PUT", body: JSON.stringify({ enabled: on }) });
+    $("#enabledState").textContent = "";
+    if (CUR.config) CUR.config.enabled = on;
+    toast(on ? "Pipeline enabled for this form."
+             : "Pipeline paused — queued work stops, nothing is deleted.", "ok");
+    loadAssets();
+  } catch (e) {
+    $("#enabledState").textContent = "";
+    $("#cfgEnabled").checked = !on;
+    toast(e.message, "err");
+  }
 });
 $("#applyBtn").addEventListener("click", () => applySetup(false));
 $("#previewBtn").addEventListener("click", () => applySetup(true));
@@ -1288,6 +1355,18 @@ function renderHooks() {
     }));
     $("#step6").classList.add("ok");
   }
+  const ourHook = ours[0];
+  const sendsAll = !ourHook || !(ourHook.subset_fields || []).length;
+  $("#hookScopeNote").innerHTML = ourHook
+    ? (sendsAll
+        ? `<span style="color:var(--critical)">This webhook posts every answer in the `
+          + `form to this server on each submission.</span> The pipeline only reads the `
+          + `submission id. Untick the box and re-register to send just that — the `
+          + `5-minute poller covers anything a restricted payload misses.`
+        : `Sends only the submission id (${esc((ourHook.subset_fields || []).join(", "))}). `
+          + `Interview content stays in KoboToolbox.`)
+    : `Leave unticked to post only the submission id. The pipeline never reads the `
+      + `answers, so there is no reason to send them.`;
   $("#hookHint").textContent = ENV.webhook_secret_set
     ? `Secured with the ${ENV.webhook_secret_header} header.`
     : "WEBHOOK_SECRET is not set — the endpoint will accept unauthenticated POSTs.";
@@ -1295,7 +1374,7 @@ function renderHooks() {
 $("#hookBtn").addEventListener("click", async () => {
   try {
     const r = await api(`/assets/${encodeURIComponent(CUR.uid)}/hook`,
-      { method: "POST", body: JSON.stringify({}) });
+      { method: "POST", body: JSON.stringify({ full_payload: $("#hookFull").checked }) });
     toast(r.existing ? "Webhook already registered." : "Webhook registered.", "ok");
     openAsset(CUR.uid);
   } catch (e) { toast(e.message, "err"); }

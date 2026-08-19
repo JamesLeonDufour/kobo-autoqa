@@ -91,7 +91,7 @@ is done in the browser:
 | **Connection** | Kobo server URL, API token, TLS verification, and the webhook URL + shared secret. Test the credentials before saving. Yours alone. |
 | **Users** | administrators only: approve pending sign-ups, disable or delete accounts, grant admin |
 | **Forms** | lists every survey on the server, with its submission count and whether the pipeline is set up on it |
-| **Setup** | a 7-step wizard for the selected form — see below |
+| **Setup** | opens from **Configure** on a form; it has no tab of its own because it always belongs to one form — see below |
 | **Monitor** | live queue tiles, per-submission stage, error detail, retry, and the raw `_supplementalDetails` Kobo currently holds |
 
 On a fresh install with no `KOBO_TOKEN` in `.env`, signing in drops you
@@ -106,7 +106,12 @@ The Setup tab follows the shape of the problem: things that belong to the
 
 1. **Server capability check** — detects which NLP API the server speaks.
 2. **Trigger** — registers the Kobo REST Service webhook with the shared-secret
-   header, and shows its success/failure counts.
+   header, and shows its success/failure counts. By default it posts **only the
+   submission id**: the receiver reads an id and queues it, and never looks at
+   the answers, so there is no reason for interview content to leave
+   KoboToolbox. Tick *Send the whole submission* only if you have a reason to,
+   and note that a restricted payload loses nothing — the poller picks up
+   anything the hook misses.
 3. **Backfill** — queue existing submissions.
 
 **Audio questions** — a row per recording showing what that recording actually
@@ -139,6 +144,10 @@ HTTP.
 The pipeline can serve several people, each with their own KoboToolbox
 connection, forms, queue and results. Nothing is shared between accounts.
 
+Administrators can also create an account outright from the **Users** tab —
+username, password and role — which skips the sign-up-then-approve round trip
+when you are handing someone access directly.
+
 **Signing up is open; being let in is not.** Anyone who can reach the app can
 request an account, but it stays `pending` until an administrator approves it
 on the **Users** tab. That gate matters because an active account can start
@@ -157,6 +166,7 @@ and use a real account day to day.
 
 | Action | Who |
 |---|---|
+| Create an account directly, with a role | administrators |
 | Approve, disable, delete accounts | administrators |
 | Grant or remove administrator | administrators (never the last one, never yourself) |
 | Everything else | the account that owns the form |

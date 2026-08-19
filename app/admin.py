@@ -22,7 +22,7 @@ from . import users as U
 from .assetconf import defaults_from_env, resolve, save as save_cfg
 from .auth import (COOKIE_NAME, check_env_password, current_user, issue_for_user,
                    require_admin, store as base_store)
-from .common import make_store, submission_uuid
+from .common import UUID_FIELDS, make_store, submission_uuid
 from .config import Settings, settings
 from .kobo import KoboClient, KoboError
 from .store import STAGE_NEW, STAGE_FAILED, Store
@@ -179,6 +179,31 @@ def change_password(payload: dict = Body(...), c: Ctx = Depends(ctx)) -> dict:
 @admin_only.get("/users")
 def list_users() -> dict:
     return {"results": [U.public_view(u) for u in base_store().list_users()]}
+
+
+@admin_only.post("/users")
+def create_user(payload: dict = Body(...)) -> dict:
+    """Create an account directly, already approved.
+
+    Registration is self-service and waits for approval; this is the other
+    direction, for handing someone an account without asking them to sign up
+    first. The password is set here and should be changed by them afterwards.
+    """
+    s = base_store()
+    try:
+        user = U.register(s, payload.get("username", ""), payload.get("password", ""),
+                          payload.get("name", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # register() only auto-activates the very first account; anyone an admin
+    # creates deliberately is active too, and takes the role they were given.
+    s.set_user_status(user["id"], U.STATUS_ACTIVE)
+    if payload.get("is_admin"):
+        s.set_user_admin(user["id"], True)
+    fresh = s.get_user_by_id(user["id"])
+    log.info("Admin created account %s (%s)", fresh["username"],
+             "administrator" if fresh["is_admin"] else "member")
+    return {"ok": True, "user": U.public_view(fresh)}
 
 
 @admin_only.post("/users/{user_id}/status")
@@ -369,6 +394,7 @@ def _hook_view(c: Ctx, asset_uid: str, hooks: list[dict]) -> tuple[list[dict], s
     return ([{"uid": h.get("uid"), "name": h.get("name"), "endpoint": h.get("endpoint"),
               "active": h.get("active"), "success_count": h.get("success_count"),
               "failed_count": h.get("failed_count"),
+              "subset_fields": h.get("subset_fields") or [],
               "is_ours": h.get("endpoint") in (expected, legacy)}
              for h in hooks], expected)
 
@@ -574,15 +600,23 @@ def create_hook(asset_uid: str, payload: dict = Body(default={}),
     endpoint = f"{base.rstrip('/')}/kobo/hook/{c.uid}/{asset_uid}"
     headers = ({c.settings.webhook_secret_header: c.settings.webhook_secret}
                if c.settings.webhook_secret else {})
+    # The receiver reads an id and queues it -- it never looks at the answers.
+    # Sending only the id keeps interview content inside KoboToolbox. Anything
+    # a restricted payload loses is picked up by the poller instead.
+    full = bool(payload.get("full_payload"))
+    subset = [] if full else list(UUID_FIELDS)
     with _client(c) as client:
         for h in _kobo_guard(client.list_hooks, asset_uid):
             if h.get("endpoint") == endpoint:
                 return {"ok": True, "existing": True, "uid": h.get("uid"),
-                        "endpoint": endpoint}
+                        "endpoint": endpoint,
+                        "subset_fields": h.get("subset_fields") or []}
         hook = _kobo_guard(client.create_hook, asset_uid,
                            name=payload.get("name", "AutoQA pipeline"),
-                           endpoint=endpoint, custom_headers=headers, subset_fields=[])
-    return {"ok": True, "existing": False, "uid": hook.get("uid"), "endpoint": endpoint}
+                           endpoint=endpoint, custom_headers=headers,
+                           subset_fields=subset)
+    return {"ok": True, "existing": False, "uid": hook.get("uid"),
+            "endpoint": endpoint, "subset_fields": subset}
 
 
 @guarded.delete("/assets/{asset_uid}/hook/{hook_uid}")

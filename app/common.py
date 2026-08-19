@@ -35,6 +35,12 @@ def make_client(s: Settings = settings, store: Store | None = None) -> KoboClien
     return KoboClient(s.kobo_url, s.kobo_token, verify=s.verify_tls, timeout=s.http_timeout)
 
 
+# The only fields the receiver needs. A Kobo REST Service with an empty
+# subset_fields posts the entire submission -- every answer -- to this app,
+# when all it does is read an id and queue it.
+UUID_FIELDS = ["meta/rootUuid", "_uuid", "formhub/uuid"]
+
+
 def submission_uuid(submission: dict) -> str | None:
     """The uuid the subsequences API keys on: meta/rootUuid, else _uuid.
 
