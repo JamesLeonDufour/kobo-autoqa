@@ -318,6 +318,37 @@ never lost ones.
 
 ---
 
+## Hardening
+
+What the app does for itself, so it does not depend on how it is fronted:
+
+| Measure | Where |
+|---|---|
+| `/login` limited to 10 attempts per 5 min per IP; `/register` to 5/hour | `app/ratelimit.py` |
+| HSTS, CSP, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy` on every response | `app/webhook.py` |
+| OpenAPI schema and both doc UIs disabled | `app/webhook.py` |
+| Passwords hashed with scrypt; sessions signed and keyed on the password hash | `app/users.py` |
+| Constant-time comparison for the recovery password, webhook secret and session signatures | throughout |
+| Tokens never returned to the browser — only a masked hint | `app/runtime.py` |
+
+Rate-limit state is per-process and resets on restart. That is deliberate: it
+is a brake on automated abuse, not an audit trail, and it costs no dependency.
+The client address comes from `X-Forwarded-For` and is used **only** as a
+bucket key, never for access control, so a forged value throttles its own
+sender and nothing else.
+
+What still has to be right in your deployment:
+
+- **Force SSL and HTTP/2** on the proxy host, so `http://` redirects rather
+  than serving. The app sends HSTS, but a browser only honours it after one
+  successful HTTPS response.
+- **Publish only 80/443.** The API's `127.0.0.1:8077` binding is for local
+  debugging; it must not become `0.0.0.0`.
+- **Treat the SQLite volume as secret material** — API tokens are stored in
+  it in plaintext, exactly as they would be in `.env`.
+
+---
+
 ## Putting it behind Nginx Proxy Manager
 
 The `api` container joins two networks: its own `autoqa` network and the

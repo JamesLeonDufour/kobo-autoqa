@@ -27,7 +27,39 @@ from .store import Store
 setup_logging(settings.log_level)
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="Kobo AutoQA pipeline", version="1.1.0", docs_url=None, redoc_url=None)
+# openapi_url=None as well as the doc UIs: the schema enumerated all 30
+# endpoints, including every admin route, to anyone who asked.
+app = FastAPI(title="Kobo AutoQA pipeline", version="1.1.0",
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+
+# The admin UI is one self-contained page: no external scripts, styles, fonts
+# or images, so it can be locked down hard. Inline script and style are its
+# own, hence 'unsafe-inline' -- everything else is denied outright.
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+       "form-action 'self'")
+
+SECURITY_HEADERS = {
+    # Browsers ignore HSTS served over plain HTTP, so sending it always is
+    # safe and means the header survives a change of reverse proxy.
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": CSP,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    """Set the headers in the app rather than the proxy, so they travel with
+    the deployment instead of depending on how it happens to be fronted."""
+    response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
 app.include_router(admin_public)
 app.include_router(admin_guarded)
 app.include_router(admin_admin)

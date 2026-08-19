@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 from . import payloads as P
+from . import ratelimit as RL
 from . import runtime
 from . import supplement as S
 from . import users as U
@@ -89,7 +90,8 @@ def session() -> dict:
 
 
 @router.post("/register")
-def register(response: Response, payload: dict = Body(...)) -> dict:
+def register(request: Request, response: Response, payload: dict = Body(...)) -> dict:
+    RL.check(request, "register", RL.REGISTER)
     s = base_store()
     try:
         user = U.register(s, payload.get("username", ""), payload.get("password", ""),
@@ -111,7 +113,8 @@ def register(response: Response, payload: dict = Body(...)) -> dict:
 
 
 @router.post("/login")
-def login(response: Response, payload: dict = Body(...)) -> dict:
+def login(request: Request, response: Response, payload: dict = Body(...)) -> dict:
+    RL.check(request, "login", RL.LOGIN)
     s = base_store()
     username = (payload.get("username") or payload.get("email") or "").strip()
     password = str(payload.get("password", ""))
@@ -125,6 +128,7 @@ def login(response: Response, payload: dict = Body(...)) -> dict:
         else:
             token, ttl = issue_for_user(user)
             _set_cookie(response, token, ttl)
+            RL.forget(request, "login")
             return {"ok": True, "via": "account", "user": U.public_view(user)}
 
     # Fall back to the .env break-glass password. This is tried even when a
@@ -134,6 +138,7 @@ def login(response: Response, payload: dict = Body(...)) -> dict:
         token, ttl = U.issue_env_token(settings.admin_password,
                                        settings.admin_session_hours)
         _set_cookie(response, token, ttl)
+        RL.forget(request, "login")
         return {"ok": True, "via": "env"}
 
     if account_error:

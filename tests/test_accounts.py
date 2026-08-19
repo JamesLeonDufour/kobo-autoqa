@@ -124,6 +124,43 @@ async def main():
         fails += not ok("non-admins cannot create accounts", r.status_code == 403,
                         r.status_code)
 
+    print("\n[rate limiting]")
+    # The only two doors reachable without a session. scrypt makes each guess
+    # cost ~50ms, which is a deterrent but not a limit -- nothing capped how
+    # many an automated caller could make.
+    from app import ratelimit as RL  # noqa: PLC0415
+    RL._hits.clear()
+    async with client() as g:
+        codes = []
+        for _ in range(RL.LOGIN[0] + 3):
+            r = await g.post("/admin/api/login", json={"username": "firstuser",
+                                                        "password": "wrong-password"})
+            codes.append(r.status_code)
+        fails += not ok("guessing is eventually refused", 429 in codes,
+                        sorted(set(codes)))
+        fails += not ok("but not before a person could mistype a few times",
+                        codes[:3] == [401, 401, 401], codes[:5])
+        last = await g.post("/admin/api/login", json={"username": "firstuser",
+                                                       "password": "wrong-password"})
+        fails += not ok("the refusal says when to retry",
+                        "Retry-After" in last.headers, dict(last.headers))
+
+    RL._hits.clear()
+    async with client() as g:
+        r = await g.post("/admin/api/login", json={"username": "firstuser",
+                                                    "password": "first-account-pw"})
+        fails += not ok("a correct password still works", r.status_code == 200)
+        fails += not ok("and clears the caller's record",
+                        not any(k.startswith("login:") for k in RL._hits), list(RL._hits))
+
+    RL._hits.clear()
+    async with client() as g:
+        codes = [(await g.post("/admin/api/register", json={
+            "username": f"floodacct{i}", "password": "flooding-the-table"})).status_code
+            for i in range(RL.REGISTER[0] + 2)]
+        fails += not ok("account flooding is refused too", 429 in codes, sorted(set(codes)))
+    RL._hits.clear()
+
     print("\n[isolation]")
     async with client() as a, client() as b:
         await a.post("/admin/api/login", json={"username": "firstuser",
