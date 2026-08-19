@@ -815,7 +815,13 @@ try {
 
 /* -------------------------------- tabs ------------------------------- */
 $$(".tab").forEach(t => t.addEventListener("click", () => selectTab(t.dataset.tab)));
-function selectTab(name) {
+function selectTab(name, remember = true) {
+  // Keep the tab in the URL so a refresh stays where you were. Reloading the
+  // Monitor tab and landing back on Forms is maddening when you are watching
+  // a queue.
+  if (remember) {
+    try { history.replaceState(null, "", "#" + name); } catch {}
+  }
   $$(".tab").forEach(t => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
   ["forms","setup","monitor","connection","users"].forEach(n => $("#tab-" + n).classList.toggle("hidden", n !== name));
   // Setup has no tab of its own -- it belongs to whichever form was opened --
@@ -1568,6 +1574,12 @@ async function boot() {
   });
 
   await loadAssets();
+  // Restore whatever was open before the reload. Setup is deliberately not
+  // restorable: it belongs to a form that is no longer selected.
+  const wanted = (location.hash || "").replace("#", "");
+  if (["monitor", "connection", "users"].includes(wanted)) {
+    if (wanted !== "users" || (ME && ME.is_admin)) selectTab(wanted, false);
+  }
   setupTimer();
 }
 boot();

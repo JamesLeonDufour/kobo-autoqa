@@ -489,6 +489,13 @@ submission, and a healthy run uses several. A real one, end to end:
 13      confirm the answers — done
 ```
 
+There is no way to be told instead of asking. KoboToolbox's REST Services
+fire on submission, not on NLP completion — a hook carries no event or
+trigger field — and `/data/supplements/bulk/` is for *accepting* results in
+bulk, not for reading their status. So the interval is a trade between
+noticing quickly and asking often, nothing more: polling never slows the
+transcription itself, which KoboToolbox runs regardless.
+
 Most of it is waiting. Stages that finish with nothing outstanding hand
 straight on within the same check, so no check is spent only renaming a stage,
 and the polling interval widens from `ASYNC_POLL_SECONDS` up to 90s as a job
