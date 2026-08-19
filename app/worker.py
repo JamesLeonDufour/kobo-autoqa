@@ -143,8 +143,11 @@ def main() -> None:
                     job["asset_uid"], job["submission_uuid"], job["stage"], delay=300,
                     note="waiting for this account's Kobo credentials")
                 continue
+            keys = job.keys()
             pipe.process(job["asset_uid"], job["submission_uuid"],
-                         job["stage"], job["attempts"])
+                         job["stage"], job["attempts"],
+                         failures=(job["failures"] if "failures" in keys else 0),
+                         created_at=(job["created_at"] if "created_at" in keys else 0.0))
 
         if not jobs:
             time.sleep(settings.worker_tick_seconds)

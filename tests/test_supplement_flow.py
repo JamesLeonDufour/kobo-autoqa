@@ -220,6 +220,55 @@ def main() -> int:
     fails += not ok("re-apply across recordings is stable",
                     {q["uuid"] for q in again.definitions[SECOND]} == uu2)
 
+    print("\n[a dead action is not retried forever]")
+    # Every request appends a version, so a run of failures is recorded in the
+    # document itself. This is the shape that burned 30 billable translation
+    # calls on a live form: the transcript came back empty, so every
+    # translation 400'd, and "failed" was read as "try again".
+    def failed_versions(n, error, status="failed"):
+        return {"_versions": [
+            {"_data": {"status": status, "error": error},
+             "_dateCreated": f"2026-08-18T13:{50 + i:02d}:00Z"} for i in range(n)]}
+
+    empty_doc = {XPATH: {
+        S.ACTION_TRANSCRIBE: {"_versions": [
+            {"_data": {"status": "complete", "value": ""},
+             "_dateCreated": "2026-08-18T13:49:48Z",
+             "_dateAccepted": "2026-08-18T13:49:51Z"}]},
+        S.ACTION_TRANSLATE: {"es": failed_versions(3, "400 Empty request")},
+    }}
+    fails += not ok("an empty transcript is not a usable transcript",
+                    S.transcript_is_empty(empty_doc, XPATH))
+    fails += not ok("a non-empty one still is",
+                    not S.transcript_is_empty(
+                        {XPATH: {S.ACTION_TRANSCRIBE: {"_versions": [
+                            {"_data": {"status": "complete", "value": "bonjour"}}]}}}, XPATH))
+    fails += not ok("failure streak counted from the document",
+                    S.failure_streak(empty_doc[XPATH][S.ACTION_TRANSLATE]["es"]) == 3)
+    fails += not ok("the server's own error is surfaced",
+                    "Empty request" in S.error_text(
+                        empty_doc[XPATH][S.ACTION_TRANSLATE]["es"]))
+    # Newest-first is what a live server actually returns; the ordering must
+    # not change which version counts as latest.
+    reversed_doc = {"_versions": list(reversed(
+        empty_doc[XPATH][S.ACTION_TRANSLATE]["es"]["_versions"]))}
+    fails += not ok("version order does not matter",
+                    S.failure_streak(reversed_doc) == 3)
+    fails += not ok("a streak ends at the first success",
+                    S.failure_streak({"_versions": [
+                        {"_data": {"status": "failed"}, "_dateCreated": "2026-01-01T00:00:00Z"},
+                        {"_data": {"status": "complete"}, "_dateCreated": "2026-01-02T00:00:00Z"},
+                    ]}) == 0)
+
+    print("\n[translating a language into itself]")
+    keep, same = S.usable_targets("fr", ["es", "fr"])
+    fails += not ok("self-translation dropped", keep == ["es"] and same == ["fr"], (keep, same))
+    keep, same = S.usable_targets("fr-FR", ["fr", "en-GB"])
+    fails += not ok("locale variants compare on the base code",
+                    keep == ["en-GB"] and same == ["fr"], (keep, same))
+    keep, same = S.usable_targets("", ["fr", "es"])
+    fails += not ok("no source language means nothing to drop", same == [], same)
+
     print("\n[no calls to the removed endpoints]")
     r = httpx.get(f"http://127.0.0.1:8899/api/v2/assets/{U}/advanced_submission_post/")
     fails += not ok("legacy endpoint really is 404 in this mode", r.status_code == 404)

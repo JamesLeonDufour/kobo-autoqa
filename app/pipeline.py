@@ -145,11 +145,13 @@ class Pipeline:
         return S.AssetFeatures(self.client.list_advanced_features(asset_uid))
 
     # -- job driver ---------------------------------------------------------
-    def process(self, asset_uid: str, submission_uuid: str, stage: str, attempts: int) -> None:
-        if attempts >= self.s.max_attempts:
+    def process(self, asset_uid: str, submission_uuid: str, stage: str, attempts: int,
+                failures: int = 0, created_at: float = 0.0) -> None:
+        give_up = self._give_up(attempts, failures, created_at)
+        if give_up:
             self.store.advance(asset_uid, submission_uuid, STAGE_FAILED,
-                               error=f"gave up after {attempts} attempts")
-            log.error("[%s/%s] gave up after %s attempts", asset_uid, submission_uuid, attempts)
+                               error=give_up, note=give_up)
+            log.error("[%s/%s] %s", asset_uid, submission_uuid, give_up)
             return
 
         try:
@@ -183,7 +185,8 @@ class Pipeline:
             next_stage, delay, note = result if len(result) == 3 else (*result, "")
 
             self.store.advance(asset_uid, submission_uuid, next_stage,
-                               delay=delay, error=None, bump_attempts=True, note=note)
+                               delay=delay, error=None, bump_attempts=True, note=note,
+                               failure=False)
             log.info("[%s/%s] pass %s: %s", asset_uid, submission_uuid,
                      attempts + 1, note or f"-> {next_stage}")
 
@@ -193,25 +196,54 @@ class Pipeline:
                 # retrying will help. Park it with a note that says why.
                 self.store.advance(
                     asset_uid, submission_uuid, STAGE_FAILED, error=str(exc)[:1000],
-                    note="no submission with this uuid on the form — stale queue entry")
+                    note="no submission with this uuid on the form — stale queue entry",
+                    failure=True)
                 log.error("[%s/%s] no such submission in Kobo; giving up",
                           asset_uid, submission_uuid)
                 return
             backoff = min(600, 30 * (2 ** min(attempts, 5)))
             log.warning("[%s/%s] %s -- retrying in %ss", asset_uid, submission_uuid, exc, backoff)
             self.store.advance(asset_uid, submission_uuid, stage or STAGE_NEW,
-                               delay=backoff, error=str(exc)[:1000], bump_attempts=True)
+                               delay=backoff, error=str(exc)[:1000], bump_attempts=True,
+                               failure=True)
         except Exception as exc:  # noqa: BLE001
             log.exception("[%s/%s] unexpected error", asset_uid, submission_uuid)
             self.store.advance(asset_uid, submission_uuid, stage or STAGE_NEW,
-                               delay=300, error=repr(exc)[:1000], bump_attempts=True)
+                               delay=300, error=repr(exc)[:1000], bump_attempts=True,
+                               failure=True)
+
+    def _give_up(self, attempts: int, failures: int, created_at: float) -> str | None:
+        """Why this submission should stop, or None to keep going.
+
+        Passes are deliberately not the measure. Kobo's NLP is asynchronous, so
+        most passes are a poll, and a slow transcription used to exhaust the
+        budget and be reported as a failure. What matters is how many times
+        something actually went wrong, and how long it has been unresolved.
+        """
+        if failures >= self.s.max_failures:
+            return f"gave up after {failures} errors"
+        if created_at:
+            hours = (time.time() - created_at) / 3600
+            if hours >= self.s.max_job_age_hours:
+                return f"still unfinished after {int(hours)}h"
+        if attempts >= self.s.max_attempts:
+            return f"gave up after {attempts} passes"
+        return None
 
     # -- stages: current API (supplement dialect) ---------------------------
     def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
         requested = accepted = waiting = ready = 0
+        empty: list[str] = []
+        broken: list[str] = []
         for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
             status, _text = S.transcript_state(sup, xpath)
             if S.is_done(status):
+                # A "successful" transcription of silence returns an empty
+                # string. Accepting it would feed an empty document to
+                # translation, which rejects it on every single attempt.
+                if S.transcript_is_empty(sup, xpath):
+                    empty.append(xpath)
+                    continue
                 # A finished transcript is not usable downstream until it is
                 # accepted; translation 400s against an unaccepted one.
                 if not S.transcript_accepted(sup, xpath):
@@ -224,6 +256,11 @@ class Pipeline:
             if S.is_pending(status):
                 waiting += 1
                 continue
+            if S.is_failed(status):
+                node = S.transcript_node(sup, xpath)
+                if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
+                    broken.append(f"{xpath}: {S.error_text(node) or 'transcription failed'}")
+                    continue
             self._patch(ctx.uid, uuid, S.transcribe_body(xpath, language),
                         f"transcribe {xpath} [{language}]")
             requested += 1
@@ -232,12 +269,38 @@ class Pipeline:
             return STAGE_TRANSCRIBE, self.s.async_poll_seconds, _note(
                 "transcription", requested=requested, accepted=accepted,
                 waiting=waiting, delay=self.s.async_poll_seconds)
+
+        if not ready:
+            # Nothing usable came back, and nothing is still running.
+            if empty:
+                return STAGE_FAILED, 0.0, (
+                    f"transcription returned no speech for {', '.join(empty)} — check "
+                    f"the recording has audible speech and that the audio language "
+                    f"matches what was spoken")
+            if broken:
+                return STAGE_FAILED, 0.0, "transcription failed — " + "; ".join(broken)[:400]
+            return STAGE_DONE, 0.0, "nothing to transcribe on this submission"
+
         nxt = STAGE_TRANSLATE if (ctx.features and ctx.features.translate) else STAGE_QUAL
-        return nxt, 2.0, f"{ready} transcript(s) ready, moving to {nxt}"
+        skipped = f", {len(empty)} empty and skipped" if empty else ""
+        return nxt, 2.0, f"{ready} transcript(s) ready{skipped}, moving to {nxt}"
 
     def _sup_translate(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
         requested = accepted = waiting = blocked = 0
-        for xpath, languages in (ctx.features.translate if ctx.features else {}).items():
+        broken: list[str] = []
+        impossible: list[str] = []
+        for xpath, configured in (ctx.features.translate if ctx.features else {}).items():
+            # Advanced-features rows are append-only on current kpi builds --
+            # no DELETE, and PUT/PATCH merge rather than replace -- so a target
+            # that equals the source language cannot be removed once saved. It
+            # has to be skipped here instead, or Google rejects it forever.
+            languages, same = S.usable_targets(
+                (ctx.features.transcribe if ctx.features else {}).get(xpath, ""), configured)
+            impossible.extend(f"{xpath} -> {l}" for l in same)
+            # An empty transcript has nothing to translate; asking anyway earns
+            # a 400 per language, per pass, indefinitely.
+            if S.transcript_is_empty(sup, xpath):
+                continue
             # Nothing to translate from until an *accepted* transcript exists.
             if not S.transcript_accepted(sup, xpath):
                 blocked += len(languages)
@@ -254,6 +317,12 @@ class Pipeline:
                 if S.is_pending(status):
                     waiting += 1
                     continue
+                if S.is_failed(status):
+                    node = S.translation_node(sup, xpath, language)
+                    if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
+                        broken.append(f"{language}: "
+                                      f"{S.error_text(node) or 'translation failed'}")
+                        continue
                 self._patch(ctx.uid, uuid, S.translate_body(xpath, language),
                             f"translate {xpath} -> {language}")
                 requested += 1
@@ -265,14 +334,24 @@ class Pipeline:
         if blocked:
             return STAGE_TRANSCRIBE, 2.0, (
                 f"{blocked} translation(s) need an accepted transcript first")
+        if broken:
+            # Analysis reads the transcript, not the translation, so a dead
+            # translation is worth reporting but not worth stopping for.
+            return STAGE_QUAL, 2.0, "translation gave up — " + "; ".join(broken)[:400]
+        if impossible:
+            return STAGE_QUAL, 2.0, (
+                f"skipped {', '.join(impossible)} (same language as the audio), "
+                f"moving to analysis")
         return STAGE_QUAL, 2.0, "translations ready, moving to analysis"
 
     def _sup_qual(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
         if not ctx.cfg.enable_qual:
             return STAGE_DONE, 0.0, "analysis disabled for this form"
-        requested = waiting = answered = 0
+        requested = waiting = answered = skipped = 0
+        broken: list[str] = []
         for xpath in (ctx.features.qual if ctx.features else {}):
-            if not S.transcript_accepted(sup, xpath):
+            if S.transcript_is_empty(sup, xpath) or not S.transcript_accepted(sup, xpath):
+                skipped += 1
                 continue
             for question_uuid in ctx.features.answerable_qual(xpath):
                 status = S.qual_state(sup, xpath, question_uuid)
@@ -282,6 +361,12 @@ class Pipeline:
                 if S.is_pending(status):
                     waiting += 1
                     continue
+                if S.is_failed(status):
+                    node = S.qual_node(sup, xpath, question_uuid)
+                    if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
+                        broken.append(f"{question_uuid[:8]}: "
+                                      f"{S.error_text(node) or 'analysis failed'}")
+                        continue
                 # The schema takes one uuid per request, so this is one PATCH
                 # per analysis question.
                 self._patch(ctx.uid, uuid, S.qual_body(xpath, question_uuid),
@@ -292,6 +377,12 @@ class Pipeline:
             return STAGE_QUAL, self.s.async_poll_seconds, _note(
                 "analysis", requested=requested, waiting=waiting,
                 delay=self.s.async_poll_seconds)
+        if broken:
+            return STAGE_FAILED, 0.0, "analysis gave up — " + "; ".join(broken)[:400]
+        if not answered and skipped:
+            return STAGE_FAILED, 0.0, (
+                f"no usable transcript on {skipped} recording(s), so nothing could "
+                f"be analysed")
         return STAGE_DONE, 0.0, f"complete: {answered} analysis answer(s)"
 
     def _patch(self, asset_uid: str, root_uuid: str, payload: dict, label: str) -> None:

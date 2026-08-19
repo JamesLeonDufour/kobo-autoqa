@@ -64,7 +64,13 @@ class Settings:
     worker_tick_seconds: int = field(default_factory=lambda: int(os.getenv("WORKER_TICK_SECONDS", "15")))
     # How long to wait between checks while Kobo processes an async job.
     async_poll_seconds: int = field(default_factory=lambda: int(os.getenv("ASYNC_POLL_SECONDS", "20")))
-    max_attempts: int = field(default_factory=lambda: int(os.getenv("MAX_ATTEMPTS", "40")))
+    # Real errors before a submission is parked. Polls do not count towards it.
+    max_failures: int = field(default_factory=lambda: int(os.getenv("MAX_FAILURES", "5")))
+    # Wall-clock ceiling, so a job that never resolves still stops eventually.
+    max_job_age_hours: int = field(default_factory=lambda: int(os.getenv("MAX_JOB_AGE_HOURS", "24")))
+    # Runaway guard only. Waiting for Kobo's async NLP burns passes, so this
+    # has to stay well clear of a healthy run -- MAX_FAILURES is the real limit.
+    max_attempts: int = field(default_factory=lambda: int(os.getenv("MAX_ATTEMPTS", "500")))
 
     # --- Webhook -----------------------------------------------------------
     webhook_secret: str = field(default_factory=lambda: os.getenv("WEBHOOK_SECRET", ""))

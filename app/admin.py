@@ -493,11 +493,18 @@ def _save_qual_supplement(client, asset_uid: str, features: S.AssetFeatures,
     skipped = [q["labels"]["_default"] for q in definitions
                if q["type"] not in S.AUTO_QUAL_TYPES]
 
+    # Google refuses a translation whose target is the source language, and it
+    # refuses it once per submission forever. Drop it here rather than storing
+    # a configuration that can only ever fail.
+    source = payload.get("transcript_language") or ""
+    languages, same_as_source = S.usable_targets(source, payload.get("translation_languages"))
+
     if payload.get("dry_run"):
         return {"ok": True, "dry_run": True, "xpaths": xpaths,
                 "manual_qual": definitions,
                 "automatic_bedrock_qual": S.auto_qual_params(survey),
-                "not_auto_answerable": skipped}
+                "not_auto_answerable": skipped,
+                "dropped_languages": same_as_source}
 
     edited = payload.get("edit_xpath") or xpaths[0]
     stored: dict[str, list[dict]] = {}
@@ -505,8 +512,8 @@ def _save_qual_supplement(client, asset_uid: str, features: S.AssetFeatures,
         for xpath in xpaths:
             stored[xpath] = S.sync_question(
                 client, asset_uid, features, xpath,
-                transcribe_language=payload.get("transcript_language") or "",
-                translate_languages=payload.get("translation_languages") or [],
+                transcribe_language=source,
+                translate_languages=languages,
                 questions=survey,
                 enable_qual=payload.get("enable_qual", True),
                 merge=(xpath != edited),
@@ -524,7 +531,8 @@ def _save_qual_supplement(client, asset_uid: str, features: S.AssetFeatures,
             "auto_qual_uuids": features.qual.get(first, []),
             "transcript_language": features.transcribe.get(first, ""),
             "translation_languages": features.translate.get(first, []),
-            "not_auto_answerable": skipped}
+            "not_auto_answerable": skipped,
+            "dropped_languages": same_as_source}
 
 
 # ---------------------------------------------------------------------------

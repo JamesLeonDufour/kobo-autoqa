@@ -150,7 +150,7 @@ be able to approve the second. It also adopts anything configured before
 accounts existed, so upgrading an existing deployment keeps its forms, queue
 and saved credentials.
 
-`ADMIN_PASSWORD` still works as a break-glass login: leave the email blank on
+`ADMIN_PASSWORD` still works as a break-glass login: leave the username blank on
 the sign-in form. It resolves to the first administrator account when one
 exists, so its actions are attributed to a real owner. Keep it for recovery,
 and use a real account day to day.
@@ -385,12 +385,25 @@ is the ground truth for whether the NLP actually ran.
 | Jobs cycle in **Transcribing** and never finish | Kobo accepted the request but its NLP is not completing — AutoQA may not be enabled server-side, or the audio language is not ASR-supported. Check the supplement with "View". |
 | Everything lands in **Failed** with a 400 | Almost always the payload dialect. Run `introspect` against the server and pin `SCHEMA_DIALECT`; see [Known version sensitivity](#known-version-sensitivity). |
 | Webhook shows failures in Kobo | Secret mismatch (403) or the form is not enabled here (404). Re-register the hook from the Setup tab after any secret change. |
+| **transcription returned no speech** | Transcription succeeded but produced an empty string — Google heard no speech in the recording. Check the clip is audible and long enough, and that the audio language matches what was actually spoken. Nothing downstream can run without text. |
+| **translation gave up — Target language can't be equal to source language** | A translation target is the same language as the audio. Remove it from "Translate into"; the Setup tab now warns before you save and drops it on apply. |
 | NPM returns **502** | The `api` container is down, or it is not on the `nginxproxy_default` network — confirm with `docker exec nginxproxy-app-1 curl -s -o /dev/null -w '%{http_code}' http://kobo-autoqa-api:8000/healthz`. |
 
 A job parked in `failed` is not lost. **Retry all failed** on the Monitor tab
 resets them to `new` and the worker picks them straight back up.
 
 ### "Passes" is not a retry count
+
+Passes and failures are counted separately, and only failures park a job. This
+matters because Kobo's NLP is asynchronous: an eleven-minute transcription is
+perfectly normal and would otherwise exhaust a budget meant for errors, so a
+slow submission used to be reported as a broken one.
+
+A failed action is retried at most `MAX_ACTION_FAILURES` (2) times before the
+pipeline stops and records the server's own explanation. Most failures here are
+permanent — empty source text, or a target language equal to the source — and
+re-requesting them costs a billable call each time for a result that cannot
+change.
 
 The number on the Monitor tab counts how many times the worker has looked at a
 submission, and a healthy run uses several. The worker never blocks on Kobo's
@@ -441,7 +454,9 @@ form's own values win — so one form can be `fr-FR → en` while another is
 | `QUAL_SOURCE_LANGUAGE` | Which text AutoQA reads. Empty = the original transcript. |
 | `ASYNC_POLL_SECONDS` | How often to re-check a running NLP job. 20s is fine; lower just burns API calls. |
 | `POLL_INTERVAL_SECONDS` | Catch-up poll frequency. 300s is a good default; drop to 60s if the webhook is not registered. |
-| `MAX_ATTEMPTS` | Passes before a submission is parked in `failed`. At 20s/pass, 40 ≈ 13 minutes of NLP wall time. |
+| `MAX_FAILURES` | Real errors before a submission is parked in `failed`. Polls do **not** count towards it, so a slow transcription is never mistaken for a broken one. |
+| `MAX_JOB_AGE_HOURS` | Wall-clock ceiling. A submission still unresolved after this long stops being chased. |
+| `MAX_ATTEMPTS` | Runaway guard only. Waiting on async NLP burns passes, so keep this well clear of a healthy run — `MAX_FAILURES` is the real limit. |
 
 ---
 
@@ -544,6 +559,30 @@ sequence per question is really: request transcription → wait → **accept it*
 → request each translation → wait → **accept each** → request each analysis
 question. The pipeline does all of that unattended; the acceptance steps are
 the ones that are easy to miss when reading the schema alone.
+
+### Advanced-features rows are append-only
+
+Worth knowing before you save a form, because it is not reversible. On current
+kpi builds the per-question configuration rows accept additions but no
+removals:
+
+```
+/advanced-features/            GET, POST
+/advanced-features/<uid>/      GET, PUT, PATCH        (no DELETE)
+```
+
+and both `PUT` and `PATCH` **merge** `params` rather than replacing them —
+sending `[{"language":"es"}]` to a row holding `es, fr` leaves it holding
+`es, fr`. So a translation target or an analysis question, once written to a
+form, cannot be removed through the API at all.
+
+The pipeline copes by filtering at request time rather than trusting the
+stored configuration: a target equal to the source language is skipped, and an
+analysis question the model cannot answer is skipped, however the row got
+there. Both are reported in the Monitor tab's note so the reason is visible.
+
+Practically: **get the languages right before you apply**, and treat the
+Setup tab's warnings as blocking rather than advisory.
 
 ### Configuration is per audio question
 

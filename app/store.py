@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     submission_uuid TEXT NOT NULL,
     stage           TEXT NOT NULL DEFAULT 'new',
     attempts        INTEGER NOT NULL DEFAULT 0,
+    failures        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at REAL NOT NULL DEFAULT 0,
     last_error      TEXT,
     note            TEXT,
@@ -132,6 +133,13 @@ class Store:
                       f"SELECT 0, {shared} FROM {table}_old")
             c.execute(f"DROP TABLE {table}_old")
             log.info("Migrated %s to owner-scoped schema", table)
+        if "jobs" in existing:
+            # Errors are counted separately from passes: a submission waiting on
+            # Kobo's async NLP must not exhaust a budget meant for failures.
+            jcols = [r["name"] for r in c.execute("PRAGMA table_info(jobs)")]
+            if "failures" not in jcols:
+                c.execute("ALTER TABLE jobs ADD COLUMN failures INTEGER NOT NULL DEFAULT 0")
+                log.info("Added jobs.failures")
 
     def for_owner(self, owner: int) -> "Store":
         """A view of the same database limited to one user's rows."""
@@ -204,17 +212,23 @@ class Store:
 
     def advance(self, asset_uid: str, submission_uuid: str, stage: str,
                 delay: float = 0.0, error: str | None = None,
-                bump_attempts: bool = False, note: str | None = None) -> None:
+                bump_attempts: bool = False, note: str | None = None,
+                failure: bool | None = None) -> None:
         """`note` says what this pass did and what it is waiting for, so the
         attempt count is readable rather than just a number.
 
         Passing note=None leaves the existing one alone -- callers that only
         reschedule a job (clearing a backoff, requeueing) should not erase the
         explanation the last real pass wrote.
+
+        `failure` counts errors, which is what the give-up rule reads: True
+        after a real error, False when a pass succeeds (clearing a transient
+        one), None to leave the count alone.
         """
         now = time.time()
         note_sql = "?" if note is not None else "note"
         bump = 1 if bump_attempts else 0
+        fail_sql = ("failures + 1" if failure else "0") if failure is not None else "failures"
         scope, scope_args = self._scope()
         with self._lock, self._conn() as c:
             c.execute(
@@ -225,7 +239,8 @@ class Store:
                     last_error = ?,
                     note = {note_sql},
                     updated_at = ?,
-                    attempts = attempts + {bump}
+                    attempts = attempts + {bump},
+                    failures = {fail_sql}
                 WHERE asset_uid = ? AND submission_uuid = ?{scope}
                 """,
                 (stage, now + delay, error, *([note] if note is not None else []),

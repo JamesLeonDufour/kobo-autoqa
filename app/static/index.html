@@ -365,7 +365,8 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
               <label class="field"><span>Audio language (BCP-47, must have ASR support)</span>
                 <input type="text" id="cfgTranscript" placeholder="fr-FR"></label>
               <label class="field"><span>Translate into (comma separated, blank = skip)</span>
-                <input type="text" id="cfgTranslations" placeholder="en, es"></label>
+                <input type="text" id="cfgTranslations" placeholder="en, es">
+                <span id="langWarn" class="small hidden" style="color:var(--critical)"></span></label>
               <label class="field" id="qualSourceField"><span>Language AutoQA reads (blank = original transcript)</span>
                 <input type="text" id="cfgQualSource" placeholder="en"></label>
             </div>
@@ -989,6 +990,7 @@ function renderSetup() {
   $("#cfgEnableQual").checked   = NEW_API ? (q.auto_qual_uuids || []).length > 0 : cfg.enable_qual;
   $("#qualSourceField").classList.toggle("hidden", NEW_API);
   $("#step3").classList.toggle("ok", !!$("#cfgTranscript").value);
+  checkLanguages();
 
   // step 4 — qual questions
   QUAL = JSON.parse(JSON.stringify((NEW_API ? q.qual_survey : c.qual_survey) || []));
@@ -1130,6 +1132,22 @@ function pickedXpaths() {
   return ticked;
 }
 function langList(v) { return v.split(",").map(s => s.trim()).filter(Boolean); }
+const baseLang = v => (v || "").replace("_", "-").split("-")[0].trim().toLowerCase();
+
+/* Google rejects a translation whose target is the source language, once per
+   submission, forever. Say so while it is still a text box. */
+function checkLanguages() {
+  const src = baseLang($("#cfgTranscript").value);
+  const clash = langList($("#cfgTranslations").value).filter(l => src && baseLang(l) === src);
+  const w = $("#langWarn");
+  w.classList.toggle("hidden", !clash.length);
+  if (clash.length) w.textContent =
+    `${clash.join(", ")} is the same language as the audio — Google rejects that, so `
+    + `it will be dropped on apply. Remove it before saving: KoboToolbox never lets a `
+    + `translation target be deleted once stored, and the pipeline then has to skip it.`;
+}
+$("#cfgTranscript").addEventListener("input", checkLanguages);
+$("#cfgTranslations").addEventListener("input", checkLanguages);
 
 function currentConfig() {
   return {
@@ -1173,6 +1191,10 @@ async function applySetup(dryRun) {
     const n = (res.xpaths || []).length;
     toast(n ? `Configuration applied to ${n} recording${n > 1 ? "s" : ""}.`
             : "Configuration applied to KoboToolbox.", "ok");
+    if ((res.dropped_languages || []).length) {
+      toast(`Dropped ${res.dropped_languages.join(", ")} — the audio is already in `
+          + `that language, so there is nothing to translate.`, "err");
+    }
     if ((res.not_auto_answerable || []).length) {
       toast(`Saved, but the model cannot answer these automatically: ${
         res.not_auto_answerable.join(", ")}. They are stored for human coding.`, "err");

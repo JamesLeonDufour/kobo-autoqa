@@ -52,6 +52,12 @@ QUAL_TYPES = CHOICE_TYPES | {
 # integer are accepted; tags are refused.
 AUTO_QUAL_TYPES = CHOICE_TYPES | {"qualText", "qualInteger"}
 
+# How many times to re-request an action the server has already failed. Most
+# failures here are permanent (empty source text, target language == source),
+# so one retry to cover a transient blip is enough before giving up and saying
+# what the server said.
+MAX_ACTION_FAILURES = 2
+
 STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
@@ -169,6 +175,25 @@ def localise_questions(questions: list[dict], existing: list[dict]) -> list[dict
     return out
 
 
+def usable_targets(source: str, targets: list[str] | None) -> tuple[list[str], list[str]]:
+    """Split translation targets into those worth requesting and those not.
+
+    Translating a language into itself is rejected by Google with
+    `400 Target language can't be equal to source language`, and the rejection
+    repeats for every submission. Only the base code matters: fr-FR audio
+    cannot be translated to fr, however either side is written.
+    """
+    base = split_language(source)[0].lower()
+    keep: list[str] = []
+    same: list[str] = []
+    for target in targets or []:
+        if base and split_language(target)[0].lower() == base:
+            same.append(target)
+        else:
+            keep.append(target)
+    return keep, same
+
+
 def auto_qual_params(questions: list[dict]) -> list[dict]:
     """Which questions the AI should answer -- see AUTO_QUAL_TYPES.
 
@@ -261,15 +286,24 @@ class AssetFeatures:
 # ---------------------------------------------------------------------------
 # reading state out of a supplement document
 # ---------------------------------------------------------------------------
+def _ordered_versions(node: dict | None) -> list[dict]:
+    """An action's version list, oldest first.
+
+    The order is not something to rely on: a live server returns newest first,
+    while the documentation implies the opposite. Every real version carries
+    `_dateCreated`, so sort on it and only fall back to list order when it is
+    missing.
+    """
+    versions = list((node or {}).get("_versions") or [])
+    if versions and all(v.get("_dateCreated") for v in versions):
+        versions.sort(key=lambda v: v["_dateCreated"])
+    return versions
+
+
 def _latest_version(node: dict | None) -> dict:
     """The most recent entry of an action's append-only version list."""
-    versions = (node or {}).get("_versions") or []
-    if not versions:
-        return {}
-    # Newest last is the documented order; sort defensively when dates exist.
-    if all(v.get("_dateCreated") for v in versions):
-        versions = sorted(versions, key=lambda v: v["_dateCreated"])
-    return versions[-1]
+    versions = _ordered_versions(node)
+    return versions[-1] if versions else {}
 
 
 def _latest(node: dict | None) -> dict:
@@ -317,6 +351,58 @@ def qual_state(supplement: dict, xpath: str, question_uuid: str) -> str | None:
     node = (_question(supplement, xpath).get(ACTION_QUAL) or {}).get(question_uuid)
     data = _latest(node)
     return data.get("status") if data else None
+
+
+def transcript_node(supplement: dict, xpath: str) -> dict:
+    return _question(supplement, xpath).get(ACTION_TRANSCRIBE) or {}
+
+
+def translation_node(supplement: dict, xpath: str, language: str) -> dict:
+    return (_question(supplement, xpath).get(ACTION_TRANSLATE) or {}).get(language) or {}
+
+
+def qual_node(supplement: dict, xpath: str, question_uuid: str) -> dict:
+    return (_question(supplement, xpath).get(ACTION_QUAL) or {}).get(question_uuid) or {}
+
+
+def failure_streak(node: dict | None) -> int:
+    """How many times in a row the most recent attempts have failed.
+
+    Every request appends a version, so the document itself records how often
+    we have already tried. That is the whole retry state -- no bookkeeping of
+    our own, and it survives a restart.
+    """
+    streak = 0
+    for version in reversed(_ordered_versions(node)):
+        if (version.get("_data") or {}).get("status") == STATUS_FAILED:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def error_text(node: dict | None) -> str:
+    """The server's own explanation for the latest attempt, if it failed."""
+    return str((_latest(node) or {}).get("error") or "").strip()
+
+
+def transcript_text(supplement: dict, xpath: str) -> str:
+    return str(_latest(transcript_node(supplement, xpath)).get("value") or "")
+
+
+def transcript_is_empty(supplement: dict, xpath: str) -> bool:
+    """A transcript that finished with no words in it.
+
+    Google reports this as a *successful* transcription with an empty value.
+    Accepting it would send an empty string to translation, which answers
+    `400 Empty request` for as long as anything keeps asking.
+    """
+    status, _ = transcript_state(supplement, xpath)
+    return is_done(status) and not transcript_text(supplement, xpath).strip()
+
+
+def is_failed(status: str | None) -> bool:
+    return status == STATUS_FAILED
 
 
 def is_pending(status: str | None) -> bool:
