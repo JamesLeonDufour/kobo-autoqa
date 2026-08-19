@@ -291,17 +291,11 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
           <div class="body">
             <h2>Server capability check</h2>
             <p class="muted small" style="margin:2px 0 10px" id="step1Note">
-              What the <code>advanced_submission_post</code> endpoint on this server accepts.
-              The dialect decides the payload shape the worker sends.</p>
+              Which NLP API this server speaks, and whether it can do this work at all.</p>
             <div class="row">
-              <span class="small sec">Detected dialect</span>
+              <span class="small sec">This server speaks</span>
               <span id="dialectBadge" class="badge st-idle"><span class="dot"></span>—</span>
-              <select id="cfgDialect" style="width:auto">
-                <option value="auto">auto-detect</option>
-                <option value="supplement">supplement (current API)</option>
-                <option value="legacy">legacy (googlets / googletx)</option>
-                <option value="20250820">20250820 (Action enum)</option>
-              </select>
+              <span id="dialectNote" class="small muted"></span>
             </div>
             <details style="margin-top:10px" id="schemaBlock">
               <summary>Raw advanced_submission_schema</summary>
@@ -954,13 +948,19 @@ function renderSetup() {
   $("#dialectBadge").className = "badge " + (known ? "st-good" : "st-warning");
   $("#dialectBadge").innerHTML = `<span class="dot"></span>${esc(c.detected_dialect || "unknown")}`;
   $("#step1").classList.toggle("ok", !!known);
-  $("#cfgDialect").value = cfg.schema_dialect || "auto";
   // The old schema endpoint does not exist on the current API, so showing its
   // 404 body as "raw schema" would just be noise.
   $("#schemaBlock").classList.toggle("hidden", NEW_API);
+  // Detection is a probe, not a guess: either /advanced-features/ answers or it
+  // does not. There was a dialect override here; every value it offered other
+  // than the detected one pointed at an endpoint the server does not have, so
+  // the only thing it could do was break a working form.
   $("#step1Note").textContent = NEW_API
     ? "This server uses the current advanced-features API. Analysis questions are stored per audio question."
-    : "What the advanced_submission_post endpoint on this server accepts. The dialect decides the payload shape the worker sends.";
+    : "Detected from what this server's NLP endpoints answer.";
+  $("#dialectNote").textContent = known
+    ? "detected automatically — nothing to choose"
+    : "could not confirm this server's NLP API; transcription may not be available here";
   if (!NEW_API) $("#schemaDump").textContent = JSON.stringify(c.schema, null, 2);
 
   // step 2 — questions. On the current API a configuration belongs to exactly
@@ -1247,7 +1247,6 @@ function currentConfig() {
     translation_languages: langList($("#cfgTranslations").value),
     qual_source_language: $("#cfgQualSource").value.trim(),
     enable_qual: $("#cfgEnableQual").checked,
-    schema_dialect: $("#cfgDialect").value,
     xpaths: pickedXpaths(),
   };
 }

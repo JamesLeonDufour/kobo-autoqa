@@ -104,7 +104,9 @@ The Setup tab follows the shape of the problem: things that belong to the
 
 **Form setup** — done once per form:
 
-1. **Server capability check** — detects which NLP API the server speaks.
+1. **Server capability check** — reports which NLP API the server speaks, and
+   whether it can do this work at all. There is nothing to choose: the app
+   probes `/advanced-features/` and either gets an answer or does not.
 2. **Trigger** — registers the Kobo REST Service webhook with the shared-secret
    header, and shows its success/failure counts. By default it posts **only the
    submission id**: the receiver reads an id and queues it, and never looks at
@@ -514,6 +516,12 @@ the Setup tab pauses a form without losing its configuration.
 ---
 
 ## Which NLP API your server speaks
+
+Detection is automatic and is a probe rather than a guess: `/advanced-features/`
+either answers or 404s. The Setup tab shows the result and offers no override,
+because on any given server every value except the detected one names an
+endpoint that is not there. `SCHEMA_DIALECT` in `.env` remains as an escape
+hatch if you ever need to pin it.
 
 kpi has shipped three generations of the automated-NLP API. The pipeline
 implements all three and picks one per form at runtime, so you normally do not
