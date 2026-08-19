@@ -568,7 +568,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
       </header>
       <div class="scroll">
         <table>
-          <thead><tr><th>Submission</th><th>Form</th><th>Stage</th><th class="num" title="Worker passes over this submission. Each request and each poll for a result counts as one; a full run is normally 6-10, not retries.">Passes</th><th>Updated</th><th>Detail</th><th></th></tr></thead>
+          <thead><tr><th>Submission</th><th>Form</th><th>Stage</th><th class="num" title="How many times the worker has looked at this submission. Most are polls waiting for KoboToolbox to finish transcribing — not retries, and not errors. A healthy run is roughly 10-15, most of them spent waiting on Google.">Checks</th><th>Updated</th><th>Detail</th><th></th></tr></thead>
           <tbody id="jobRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
       </div>

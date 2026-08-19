@@ -495,6 +495,20 @@ def stalled_for(node: dict | None) -> float:
     return max(0.0, time.time() - started) if started else 0.0
 
 
+def poll_delay(base: float, running_seconds: float, cap: float = 90.0) -> float:
+    """How long to wait before looking again at a job that is still running.
+
+    A short interval is right for the first minute, when most jobs finish. It
+    is waste after that: a transcription that has been going three minutes is
+    not going to be finished twenty seconds later, and each check is a request.
+    """
+    if running_seconds < 60:
+        return base
+    if running_seconds < 300:
+        return min(cap, base * 2)
+    return min(cap, base * 3)
+
+
 def is_stalled(node: dict | None, seconds: float = STALL_SECONDS) -> bool:
     """An attempt that has been running long enough to count as abandoned."""
     return stalled_for(node) > seconds

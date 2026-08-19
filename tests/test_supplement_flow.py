@@ -122,7 +122,7 @@ def main() -> int:
     row = [r for r in store.list_jobs(limit=50) if r["submission_uuid"] == SUB][0]
     fails += not ok("each pass records why it stopped",
                     bool(row["note"]) and "analysis answer" in row["note"], row["note"])
-    fails += not ok("passed through every stage",
+    fails += not ok("passed through every stage in order",
                     {"transcribe", "translate", "qual"} <= set(seen), seen)
 
     print("\n[results landed in Kobo]")
@@ -356,6 +356,16 @@ def main() -> int:
                              "params": [{"language": "fr"}]}])
     fails += not ok("an unchanged recording reports no history",
                     once.transcribe[XPATH] == "fr" and not once.superseded)
+
+    print("\n[passes are not wasted on bookkeeping]")
+    # A pass that only renames a stage costs a round trip and shows up in the
+    # count as if something happened. Stages that finish with nothing
+    # outstanding now hand straight on within the same pass.
+    fails += not ok("a fresh job polls at the base interval",
+                    S.poll_delay(20, 5) == 20)
+    fails += not ok("a minute in, it slows down", S.poll_delay(20, 120) == 40)
+    fails += not ok("a long one slows further", S.poll_delay(20, 600) == 60)
+    fails += not ok("and never beyond the cap", S.poll_delay(20, 99999) <= 90)
 
     print("\n[a job nobody is working on]")
     # Kobo can leave a submission saying in_progress while its own queue

@@ -463,7 +463,7 @@ is the ground truth for whether the NLP actually ran.
 A job parked in `failed` is not lost. **Retry all failed** on the Monitor tab
 resets them to `new` and the worker picks them straight back up.
 
-### "Passes" is not a retry count
+### "Checks" is not a retry count
 
 Passes and failures are counted separately, and only failures park a job. This
 matters because Kobo's NLP is asynchronous: an eleven-minute transcription is
@@ -477,7 +477,23 @@ re-requesting them costs a billable call each time for a result that cannot
 change.
 
 The number on the Monitor tab counts how many times the worker has looked at a
-submission, and a healthy run uses several. The worker never blocks on Kobo's
+submission, and a healthy run uses several. A real one, end to end:
+
+```
+ 1      request transcription
+ 2- 8   waiting for Google  (the interval widens as the job runs on)
+ 9      accept the transcript
+10      hand on to translation and request both languages
+11      accept both translations
+12      hand on to analysis and request all four questions
+13      confirm the answers — done
+```
+
+Most of it is waiting. Stages that finish with nothing outstanding hand
+straight on within the same check, so no check is spent only renaming a stage,
+and the polling interval widens from `ASYNC_POLL_SECONDS` up to 90s as a job
+runs on — a transcription three minutes in is not about to finish twenty
+seconds later. The worker never blocks on Kobo's
 async NLP: each pass either issues one request or checks whether an earlier one
 finished, then reschedules itself. On the current API a single submission with
 one recording, three translations and four analysis questions takes roughly:

@@ -180,18 +180,9 @@ class Pipeline:
                 supplement = self.client.get_supplement(asset_uid, submission_uuid)
 
             new_api = ctx.dialect == P.SUPPLEMENT
-            if stage in (STAGE_NEW, STAGE_TRANSCRIBE):
-                handler = self._sup_transcribe if new_api else self._do_transcribe
-            elif stage == STAGE_TRANSLATE:
-                handler = self._sup_translate if new_api else self._do_translate
-            elif stage == STAGE_QUAL:
-                handler = self._sup_qual if new_api else self._do_qual
-            else:
-                handler = None
-            result = (handler(ctx, submission_uuid, supplement)
-                      if handler else (STAGE_DONE, 0.0, "nothing to do"))
-            # The older dialects' handlers return (stage, delay) only.
-            next_stage, delay, note = result if len(result) == 3 else (*result, "")
+            handler = self._handler_for(stage, new_api)
+            next_stage, delay, note = self._run_stage(ctx, submission_uuid, supplement,
+                                                       stage, handler, new_api)
 
             self.store.advance(asset_uid, submission_uuid, next_stage,
                                delay=delay, error=None, bump_attempts=True, note=note,
@@ -221,6 +212,40 @@ class Pipeline:
                                delay=300, error=repr(exc)[:1000], bump_attempts=True,
                                failure=True)
 
+    # A stage that finishes with nothing outstanding hands straight on to the
+    # next one. Doing that in a fresh pass meant a whole round trip -- and a
+    # pass in the count -- spent doing nothing but changing a word in a
+    # database row.
+    CHAIN_LIMIT = 4
+
+    def _run_stage(self, ctx: AssetContext, uuid: str, supplement: dict, stage: str,
+                   handler, new_api: bool) -> tuple[str, float, str]:
+        notes: list[str] = []
+        for _ in range(self.CHAIN_LIMIT):
+            result = (handler(ctx, uuid, supplement)
+                      if handler else (STAGE_DONE, 0.0, "nothing to do"))
+            # The older dialects' handlers return (stage, delay) only.
+            next_stage, delay, note = result if len(result) == 3 else (*result, "")
+            if note:
+                notes.append(note)
+            nxt = self._handler_for(next_stage, new_api)
+            if not new_api or next_stage == stage or nxt is None or delay > 5:
+                break
+            # Only a hand-off is worth chaining: anything waiting on Kobo has
+            # to come back later regardless.
+            stage, handler = next_stage, nxt
+            supplement = self.client.get_data_supplement(ctx.uid, uuid)
+        return next_stage, delay, " → ".join(notes)
+
+    def _handler_for(self, stage: str, new_api: bool):
+        if stage in (STAGE_NEW, STAGE_TRANSCRIBE):
+            return self._sup_transcribe if new_api else self._do_transcribe
+        if stage == STAGE_TRANSLATE:
+            return self._sup_translate if new_api else self._do_translate
+        if stage == STAGE_QUAL:
+            return self._sup_qual if new_api else self._do_qual
+        return None
+
     def _give_up(self, attempts: int, failures: int, created_at: float) -> str | None:
         """Why this submission should stop, or None to keep going.
 
@@ -242,6 +267,7 @@ class Pipeline:
     # -- stages: current API (supplement dialect) ---------------------------
     def _sup_transcribe(self, ctx: AssetContext, uuid: str, sup: dict) -> tuple[str, float, str]:
         requested = accepted = waiting = ready = stalled = 0
+        longest = 0.0
         empty: list[str] = []
         broken: list[str] = []
         for xpath, row_language in (ctx.features.transcribe if ctx.features else {}).items():
@@ -268,6 +294,7 @@ class Pipeline:
             node = S.transcript_node(sup, xpath)
             if S.is_pending(status):
                 running = S.stalled_for(node)
+                longest = max(longest, running)
                 if running <= self.s.nlp_stall_seconds:
                     waiting += 1
                     continue
@@ -290,11 +317,12 @@ class Pipeline:
             requested += 1
 
         if requested or accepted or waiting:
+            delay = S.poll_delay(self.s.async_poll_seconds, longest)
             note = _note("transcription", requested=requested, accepted=accepted,
-                         waiting=waiting, delay=self.s.async_poll_seconds)
+                         waiting=waiting, delay=delay)
             if stalled:
                 note = f"{note} (restarted {stalled} stalled job(s))"
-            return STAGE_TRANSCRIBE, self.s.async_poll_seconds, note
+            return STAGE_TRANSCRIBE, delay, note
 
         if not ready:
             # Nothing usable came back, and nothing is still running.
