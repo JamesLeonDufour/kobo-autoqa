@@ -2,18 +2,14 @@
 
 Fully unattended transcription → translation → qualitative analysis for
 KoboToolbox submissions. A new submission arrives, the pipeline requests
-Kobo's own NLP jobs (AWS Transcribe → Google Translate → Bedrock AutoQA), and
-the results land back in the submission's `_supplementalDetails`, so they show
-up in the data table and in every export with no human clicking anything.
+Kobo's own NLP jobs, and the results land back in the submission's
+`_supplementalDetails`, so they show up in the data table and in every export
+with no human clicking anything.
 
 Everything is configurable from a web UI at **`/admin/`** — enter your Kobo
 credentials, pick a form, check what the server's NLP API accepts, build the
 analysis questions, register the webhook, then watch the queue. The CLI does
 the same things headlessly.
-
-> Not affiliated with or endorsed by KoboToolbox. It drives their public API
-> as any client would, and the transcription, translation and analysis are
-> performed by KoboToolbox itself — this only decides what to ask for, and when.
 
 ## Architecture
 
