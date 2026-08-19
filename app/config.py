@@ -89,16 +89,17 @@ class Settings:
 
     def validate(self) -> None:
         if not self.kobo_token or self.kobo_token in PLACEHOLDERS:
+            # Surfaced in the browser as a 400, so it names the screen that
+            # fixes it rather than a file the reader may have no access to.
             raise RuntimeError(
-                "No Kobo API token. Set KOBO_TOKEN in .env, or enter one on the "
-                "Connection tab of the admin UI."
+                "No KoboToolbox API token. Add one on the Connection tab."
             )
         if not self.kobo_url.startswith("http"):
             raise RuntimeError("Kobo server URL must be a full http(s) URL")
         if self.kobo_url in PLACEHOLDERS:
             raise RuntimeError(
-                f"KOBO_URL is still the example value ({self.kobo_url}). Set your "
-                "own server on the Connection tab, or in .env."
+                f"The KoboToolbox server is still the example value "
+                f"({self.kobo_url}). Set your own on the Connection tab."
             )
 
 

@@ -214,7 +214,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
         <input type="text" id="loginName" autocomplete="name"></label>
       <label class="field"><span>Username</span>
         <input type="text" id="loginUser" autocomplete="off" autocapitalize="none"
-               spellcheck="false" placeholder="leave blank for the .env password"></label>
+               spellcheck="false" placeholder="leave blank for the recovery password"></label>
       <label class="field"><span>Password</span>
         <input type="password" id="pw" autocomplete="current-password" required></label>
       <button class="primary" type="submit" style="width:100%" id="loginSubmit">Sign in</button>
@@ -226,7 +226,7 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
       <span id="firstHint" class="hidden"> — the first account becomes the administrator.</span>
     </p>
     <p class="small muted" style="margin:8px 0 0" id="envHint">
-      Leave the username blank to sign in with the <code>ADMIN_PASSWORD</code> from <code>.env</code>.
+      Leave the username blank to sign in with the recovery password set on the server.
     </p>
   </div>
 </div>
@@ -486,9 +486,9 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
         <span id="credSource" class="chip"></span>
       </header>
       <p class="muted small" style="margin-top:0">
-        Credentials entered here are stored in the pipeline database and take priority
-        over anything in <code>.env</code>. Leave a field blank to fall back to the
-        <code>.env</code> value. The API and worker both pick changes up within a few seconds.
+        These are yours alone, and override whatever the server was started with.
+        Leave a field blank to keep using the server's own value. Changes take effect
+        within a few seconds — nothing needs restarting.
       </p>
 
       <form id="credForm">
@@ -526,19 +526,20 @@ details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px
         <div class="row" style="margin-top:16px;gap:8px">
           <button class="primary" type="submit" id="credSave">Save</button>
           <button type="button" id="credTest">Test connection</button>
-          <button type="button" id="credReset">Revert to .env</button>
+          <button type="button" id="credReset">Reset to server defaults</button>
           <span id="credState" class="small muted"></span>
         </div>
       </form>
     </div>
 
     <div class="card">
-      <header><h2 style="margin:0">Admin password</h2></header>
+      <header><h2 style="margin:0">Recovery password</h2></header>
       <p class="muted small" style="margin:0">
-        Set with <span class="mono">ADMIN_PASSWORD</span> in <code>.env</code> and not editable here —
-        it protects this screen, so a deployment that had it in the database could be
-        locked out with no way back in. Change it in <code>.env</code> and restart;
-        every signed-in session is invalidated.
+        The recovery password is set on the server and cannot be changed from this
+        screen — it is what gets you back in if no account can sign in, so storing it
+        somewhere this screen could edit would mean a bad value locks everyone out
+        permanently. Ask whoever runs the server to change it; doing so signs out
+        every session.
       </p>
     </div>
   </section>
@@ -806,7 +807,7 @@ function selectTab(name) {
 }
 
 /* ---------------------------- connection ---------------------------- */
-const SOURCE_LABEL = { ui: "saved here", env: "from .env", default: "not set" };
+const SOURCE_LABEL = { ui: "saved here", env: "server default", default: "not set" };
 
 async function loadCredentials() {
   let data;
@@ -830,7 +831,7 @@ async function loadCredentials() {
 
   const fromUi = Object.values(c).filter(v => v && v.source === "ui").length;
   $("#credSource").textContent = fromUi
-    ? `${fromUi} value(s) saved here, overriding .env` : "using .env values";
+    ? `${fromUi} value(s) saved here` : "using the server's defaults";
 }
 
 $("#credForm").addEventListener("submit", async e => {
@@ -876,10 +877,10 @@ $("#credTest").addEventListener("click", async () => {
 });
 
 $("#credReset").addEventListener("click", async () => {
-  if (!confirm("Discard the credentials saved here and go back to the .env values?")) return;
+  if (!confirm("Discard the credentials saved here and go back to the server's defaults?")) return;
   try {
     await api("/credentials", { method: "DELETE" });
-    toast("Reverted to .env values.", "ok");
+    toast("Reset to the server's defaults.", "ok");
     await loadCredentials();
     await boot();
   } catch (e) { toast(e.message, "err"); }
@@ -1327,9 +1328,10 @@ function renderHooks() {
   const ours = (CUR.hooks || []).filter(h => h.is_ours);
   const box = $("#hookArea");
   if (!ENV.public_webhook_url) {
-    box.innerHTML = `<span class="badge st-warning"><span class="dot"></span>PUBLIC_WEBHOOK_URL not set</span>
-      <p class="small muted" style="margin:8px 0 0">Polling every ${ENV.poll_interval_seconds}s will still pick up submissions.
-      Set <code>PUBLIC_WEBHOOK_URL</code> in <code>.env</code> to enable instant triggering.</p>`;
+    box.innerHTML = `<span class="badge st-warning"><span class="dot"></span>No public URL set</span>
+      <p class="small muted" style="margin:8px 0 0">Submissions are still picked up by polling every
+      ${ENV.poll_interval_seconds}s. Set <strong>Public URL of this pipeline</strong> on the
+      Connection tab to have them arrive instantly instead.</p>`;
     $("#hookBtn").disabled = true;
     $("#step6").classList.toggle("ok", false);
     return;
@@ -1368,7 +1370,7 @@ function renderHooks() {
       + `answers, so there is no reason to send them.`;
   $("#hookHint").textContent = ENV.webhook_secret_set
     ? `Secured with the ${ENV.webhook_secret_header} header.`
-    : "WEBHOOK_SECRET is not set — the endpoint will accept unauthenticated POSTs.";
+    : "No shared secret set — this endpoint accepts unauthenticated POSTs. Set one on the Connection tab.";
 }
 $("#hookBtn").addEventListener("click", async () => {
   try {

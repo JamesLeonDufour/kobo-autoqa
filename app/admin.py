@@ -137,7 +137,8 @@ def login(response: Response, payload: dict = Body(...)) -> dict:
     if account_error:
         raise HTTPException(status_code=401, detail=account_error)
     if not settings.admin_password:
-        raise HTTPException(status_code=503, detail="ADMIN_PASSWORD is not set")
+        raise HTTPException(status_code=503,
+                            detail="No recovery password is configured on this server.")
     raise HTTPException(status_code=401, detail="Username or password is incorrect.")
 
 
@@ -161,7 +162,8 @@ def me(c: Ctx = Depends(ctx)) -> dict:
 def change_password(payload: dict = Body(...), c: Ctx = Depends(ctx)) -> dict:
     if c.uid < 0:
         raise HTTPException(status_code=400,
-                            detail="The .env login's password is changed in .env.")
+                            detail="The recovery password is set on the server and "
+                                   "cannot be changed here.")
     if not U.verify_password(str(payload.get("current", "")), c.user["password_hash"]):
         raise HTTPException(status_code=403, detail="Current password is incorrect.")
     new = str(payload.get("new", ""))
