@@ -300,7 +300,7 @@ docker compose run --rm worker python -m app.cli list-hooks    aBcDeFgHiJkLmNoPq
 ```
 
 This creates a Kobo REST Service pointing at
-`https://autoqa.bareit.be/kobo/hook/<asset_uid>` with your
+`https://autoqa.example.org/kobo/hook/<asset_uid>` with your
 `X-Pipeline-Secret` header attached.
 
 How the receiver decides what to accept:
@@ -333,7 +333,7 @@ In the NPM UI → **Hosts → Proxy Hosts → Add Proxy Host**:
 
 | Field | Value |
 |---|---|
-| Domain Names | `autoqa.bareit.be` |
+| Domain Names | `autoqa.example.org` |
 | Scheme | `http` |
 | Forward Hostname / IP | `kobo-autoqa-api` |
 | Forward Port | `8000` |
@@ -342,7 +342,7 @@ In the NPM UI → **Hosts → Proxy Hosts → Add Proxy Host**:
 | SSL → Certificate | request a new Let's Encrypt cert |
 | SSL → Force SSL + HTTP/2 | on |
 
-Then set `PUBLIC_WEBHOOK_URL=https://autoqa.bareit.be` in `.env` (or on the
+Then set `PUBLIC_WEBHOOK_URL=https://autoqa.example.org` in `.env` (or on the
 Connection tab) so registered webhooks point at the right place.
 
 > If you rename or recreate the compose project, the container name must stay
