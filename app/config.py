@@ -78,7 +78,7 @@ class Settings:
     # How long an NLP job may sit "in_progress" before it is assumed abandoned
     # and requested again. Kobo can leave one running with nothing queued.
     nlp_stall_seconds: int = field(
-        default_factory=lambda: int(os.getenv("NLP_STALL_MINUTES", "20")) * 60)
+        default_factory=lambda: int(os.getenv("NLP_STALL_MINUTES", "30")) * 60)
     # Real errors before a submission is parked. Polls do not count towards it.
     max_failures: int = field(default_factory=lambda: int(os.getenv("MAX_FAILURES", "5")))
     # Wall-clock ceiling, so a job that never resolves still stops eventually.

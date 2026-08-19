@@ -452,7 +452,7 @@ is the ground truth for whether the NLP actually ran.
 | Forms tab is empty | The token belongs to a user with no surveys, or lacks `view_submissions` on them. |
 | Jobs sit in **Queued** forever | The worker is not running or has no credentials. Check `docker compose logs -f worker`. |
 | Worker logs `Poll failed` against a server you never configured | It resolved the wrong account's connection. `docker compose logs worker \| grep 'connected to'` prints the server each account is using; a deployment that predates accounts is account 0. |
-| **transcription ... has been running N min with nothing queued** | Kobo left the job saying `in_progress` while its own queue held nothing. The pipeline waits `NLP_STALL_MINUTES` (20) and then asks again; the message is informational unless it repeats. |
+| **transcription ... has been running N min; asking again** | The job is still marked `in_progress` well past a normal run. Re-requesting produces a fresh attempt that completes, so the pipeline nudges it every `NLP_STALL_MINUTES` (30) rather than waiting indefinitely. Observed once on a live server: a job sat 25 minutes, and a nudge finished it in under a second. |
 | Jobs cycle in **Transcribing** and never finish | Kobo accepted the request but its NLP is not completing — AutoQA may not be enabled server-side, or the audio language is not ASR-supported. Check the supplement with "View". |
 | Everything lands in **Failed** with a 400 | Read the note on the job — the pipeline records the server's own error. Common ones: the audio language is not a recognition model (see [Audio languages need a region](#audio-languages-need-a-region)), or a translation target equals the source language. |
 | Webhook shows failures in Kobo | Secret mismatch (403) or the form is not enabled here (404). Re-register the hook from the Setup tab after any secret change. |
@@ -524,7 +524,7 @@ form's own values win — so one form can be `fr-FR → en` while another is
 | `TRANSLATION_LANGUAGES` | Comma-separated targets, e.g. `en,es`. Empty skips translation entirely. |
 | `QUAL_SOURCE_LANGUAGE` | Which text AutoQA reads. Empty = the original transcript. |
 | `ASYNC_POLL_SECONDS` | How often to re-check a running NLP job. 20s is fine; lower just burns API calls. |
-| `NLP_STALL_MINUTES` | How long a job may claim to be running before it is assumed abandoned and requested again. Kobo can leave one `in_progress` with nothing actually queued, and waiting on that never ends. |
+| `NLP_STALL_MINUTES` | How long a job may claim to be running before it is nudged with a fresh request. Kobo can leave one `in_progress` long past a normal run; asking again produces an attempt that completes. Set it above your typical transcription time — 11 to 25 minutes on the servers seen so far. |
 | `POLL_INTERVAL_SECONDS` | Catch-up poll frequency. 300s is a good default; drop to 60s if the webhook is not registered. |
 | `MAX_FAILURES` | Real errors before a submission is parked in `failed`. Polls do **not** count towards it, so a slow transcription is never mistaken for a broken one. |
 | `MAX_JOB_AGE_HOURS` | Wall-clock ceiling. A submission still unresolved after this long stops being chased. |

@@ -244,7 +244,6 @@ class Pipeline:
         requested = accepted = waiting = ready = stalled = 0
         empty: list[str] = []
         broken: list[str] = []
-        abandoned: list[str] = []
         for xpath, language in (ctx.features.transcribe if ctx.features else {}).items():
             status, _text = S.transcript_state(sup, xpath)
             if S.is_done(status):
@@ -269,17 +268,15 @@ class Pipeline:
                 if running <= self.s.nlp_stall_seconds:
                     waiting += 1
                     continue
-                if running > self.s.nlp_stall_seconds * 2:
-                    # Asking again changes nothing: the server ignores a
-                    # request while one is in_progress, and `value: null`
-                    # refuses with "Attempt to delete non-existent value"
-                    # because there is no finished value to clear. There is no
-                    # way out of this state through the API.
-                    abandoned.append(f"{xpath} ({running / 60:.0f} min)")
-                    continue
-                log.warning("[%s/%s] transcription of %s has been running %.0f min "
-                            "with nothing queued; asking once more",
-                            ctx.uid, uuid, xpath, running / 60)
+                # Asking again does clear this: a request against a job that
+                # has been abandoned produces a fresh version, which completes.
+                # It is the only lever there is -- the server ignores a request
+                # while one is genuinely running, and `value: null` refuses
+                # with "Attempt to delete non-existent value" until something
+                # has finished -- so keep using it rather than giving up. The
+                # backstop is MAX_JOB_AGE_HOURS, not a guess made here.
+                log.warning("[%s/%s] transcription of %s has been running %.0f min; "
+                            "asking again", ctx.uid, uuid, xpath, running / 60)
                 stalled += 1
             if S.is_failed(status):
                 if S.failure_streak(node) >= S.MAX_ACTION_FAILURES:
@@ -295,12 +292,6 @@ class Pipeline:
             if stalled:
                 note = f"{note} (restarted {stalled} stalled job(s))"
             return STAGE_TRANSCRIBE, self.s.async_poll_seconds, note
-
-        if abandoned and not ready:
-            return STAGE_FAILED, 0.0, (
-                f"KoboToolbox left transcription of {', '.join(abandoned)} running "
-                f"with nothing queued, and the API cannot restart or clear a job in "
-                f"that state — re-submit the record, or clear it in KoboToolbox")
 
         if not ready:
             # Nothing usable came back, and nothing is still running.
